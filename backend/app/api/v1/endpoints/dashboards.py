@@ -1,3 +1,5 @@
+"""Dashboard endpoints: CRUD operations, access control, and dashboard sharing."""
+
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +11,7 @@ from app.core.security import get_current_active_user, require_role, UserRole
 from app.models.dashboard import (
     Dashboard, DashboardCreate, DashboardUpdate, DashboardResponse,
     DashboardShare, DashboardShareCreate, DashboardShareUpdate, DashboardShareResponse,
-    DashboardWithShares, DashboardWidget, DashboardLayout
+    DashboardWithShares
 )
 from app.models.user import User
 from app.models.organization import Organization
@@ -33,21 +35,21 @@ async def get_dashboards(
         selectinload(Dashboard.organization),
         selectinload(Dashboard.shares).selectinload(DashboardShare.user)
     )
-    
+
     # Filter by organization if specified
     if organization_id:
         query = query.where(Dashboard.organization_id == organization_id)
-    
+
     # Filter by public status if specified
     if is_public is not None:
         query = query.where(Dashboard.is_public == is_public)
-    
+
     # Apply pagination
     query = query.offset(skip).limit(limit)
-    
+
     result = await db.execute(query)
     dashboards = result.scalars().unique().all()
-    
+
     # Filter dashboards based on user permissions
     accessible_dashboards = []
     for dashboard in dashboards:
@@ -56,12 +58,12 @@ async def get_dashboards(
         # 2. Dashboard is public
         # 3. They have explicit share permissions
         # 4. They are admin
-        if (dashboard.creator_id == current_user.id or 
-            dashboard.is_public or 
+        if (dashboard.creator_id == current_user.id or
+            dashboard.is_public or
             current_user.role == UserRole.ADMIN or
             any(share.user_id == current_user.id for share in dashboard.shares)):
             accessible_dashboards.append(dashboard)
-    
+
     return accessible_dashboards
 
 
@@ -81,17 +83,17 @@ async def get_dashboard(
         ).where(Dashboard.id == dashboard_id)
     )
     dashboard = result.scalar_one_or_none()
-    
+
     if not dashboard:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    
+
     # Check access permissions
-    if (dashboard.creator_id != current_user.id and 
-        not dashboard.is_public and 
+    if (dashboard.creator_id != current_user.id and
+        not dashboard.is_public and
         current_user.role != UserRole.ADMIN and
         not any(share.user_id == current_user.id for share in dashboard.shares)):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     return dashboard
 
 
@@ -107,10 +109,10 @@ async def create_dashboard(
         select(Organization).where(Organization.id == dashboard_data.organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     # Create dashboard
     dashboard = Dashboard(
         name=dashboard_data.name,
@@ -120,11 +122,11 @@ async def create_dashboard(
         is_public=dashboard_data.is_public,
         layout=dashboard_data.layout.dict() if dashboard_data.layout else None
     )
-    
+
     db.add(dashboard)
     await db.commit()
     await db.refresh(dashboard)
-    
+
     return dashboard
 
 
@@ -140,27 +142,27 @@ async def update_dashboard(
         select(Dashboard).where(Dashboard.id == dashboard_id)
     )
     dashboard = result.scalar_one_or_none()
-    
+
     if not dashboard:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    
+
     # Check permissions: creator or admin can update
     if dashboard.creator_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Update fields
     update_data = dashboard_data.dict(exclude_unset=True)
-    
+
     # Handle layout update
     if "layout" in update_data and update_data["layout"]:
         update_data["layout"] = update_data["layout"].dict()
-    
+
     for field, value in update_data.items():
         setattr(dashboard, field, value)
-    
+
     await db.commit()
     await db.refresh(dashboard)
-    
+
     return dashboard
 
 
@@ -175,17 +177,17 @@ async def delete_dashboard(
         select(Dashboard).where(Dashboard.id == dashboard_id)
     )
     dashboard = result.scalar_one_or_none()
-    
+
     if not dashboard:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    
+
     # Check permissions: creator or admin can delete
     if dashboard.creator_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     await db.delete(dashboard)
     await db.commit()
-    
+
     return {"message": "Dashboard deleted successfully"}
 
 
@@ -202,23 +204,23 @@ async def share_dashboard(
         select(Dashboard).where(Dashboard.id == dashboard_id)
     )
     dashboard = result.scalar_one_or_none()
-    
+
     if not dashboard:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    
+
     # Check permissions: creator or admin can share
     if dashboard.creator_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Verify user exists
     result = await db.execute(
         select(User).where(User.id == share_data.user_id)
     )
     user = result.scalar_one_or_none()
-    
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     # Check if share already exists
     result = await db.execute(
         select(DashboardShare).where(
@@ -229,21 +231,21 @@ async def share_dashboard(
         )
     )
     existing_share = result.scalar_one_or_none()
-    
+
     if existing_share:
         raise HTTPException(status_code=400, detail="Dashboard already shared with this user")
-    
+
     # Create share
     share = DashboardShare(
         dashboard_id=dashboard_id,
         user_id=share_data.user_id,
         permission_level=share_data.permission_level
     )
-    
+
     db.add(share)
     await db.commit()
     await db.refresh(share)
-    
+
     return share
 
 
@@ -260,27 +262,27 @@ async def update_dashboard_share(
         select(DashboardShare).where(DashboardShare.id == share_id)
     )
     share = result.scalar_one_or_none()
-    
+
     if not share or share.dashboard_id != dashboard_id:
         raise HTTPException(status_code=404, detail="Share not found")
-    
+
     # Check permissions: dashboard creator or admin can update shares
     result = await db.execute(
         select(Dashboard).where(Dashboard.id == dashboard_id)
     )
     dashboard = result.scalar_one_or_none()
-    
+
     if dashboard.creator_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Update share
     update_data = share_data.dict(exclude_unset=True)
     for field, value in update_data.items():
         setattr(share, field, value)
-    
+
     await db.commit()
     await db.refresh(share)
-    
+
     return share
 
 
@@ -296,22 +298,22 @@ async def remove_dashboard_share(
         select(DashboardShare).where(DashboardShare.id == share_id)
     )
     share = result.scalar_one_or_none()
-    
+
     if not share or share.dashboard_id != dashboard_id:
         raise HTTPException(status_code=404, detail="Share not found")
-    
+
     # Check permissions: dashboard creator or admin can remove shares
     result = await db.execute(
         select(Dashboard).where(Dashboard.id == dashboard_id)
     )
     dashboard = result.scalar_one_or_none()
-    
+
     if dashboard.creator_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     await db.delete(share)
     await db.commit()
-    
+
     return {"message": "Dashboard share removed successfully"}
 
 
@@ -327,19 +329,19 @@ async def get_dashboard_shares(
         select(Dashboard).where(Dashboard.id == dashboard_id)
     )
     dashboard = result.scalar_one_or_none()
-    
+
     if not dashboard:
         raise HTTPException(status_code=404, detail="Dashboard not found")
-    
+
     # Check permissions: creator or admin can view shares
     if dashboard.creator_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     result = await db.execute(
         select(DashboardShare).options(
             selectinload(DashboardShare.user)
         ).where(DashboardShare.dashboard_id == dashboard_id)
     )
     shares = result.scalars().all()
-    
-    return shares 
+
+    return shares

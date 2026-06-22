@@ -1,14 +1,19 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, Text, Numeric, ForeignKey, JSON
+"""Database models and Pydantic schemas for KPIs, their history and embeddings."""
+import enum
+from datetime import datetime
+from typing import Optional, List
+
+from sqlalchemy import Column, Integer, String, DateTime, Enum, Text, Numeric, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from app.core.database import Base
-import enum
 from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime
+
+from app.core.database import Base
 
 
 class KPICategory(str, enum.Enum):
+    """Classification buckets for a KPI."""
+
     FINANCIAL = "financial"
     OPERATIONAL = "operational"
     CUSTOMER = "customer"
@@ -18,8 +23,10 @@ class KPICategory(str, enum.Enum):
 
 
 class KPI(Base):
+    """A key performance indicator tracked by an organization."""
+
     __tablename__ = "kpis"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
     description = Column(Text)
@@ -32,7 +39,7 @@ class KPI(Base):
     created_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    
+
     # Relationships
     organization = relationship("Organization", back_populates="kpis")
     dashboard = relationship("Dashboard", back_populates="kpis")
@@ -42,32 +49,38 @@ class KPI(Base):
 
 
 class KPIHistory(Base):
+    """A recorded historical value for a KPI."""
+
     __tablename__ = "kpi_history"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     kpi_id = Column(Integer, ForeignKey("kpis.id"), nullable=False)
     value = Column(Numeric(15, 2), nullable=False)
     recorded_at = Column(DateTime(timezone=True), server_default=func.now())
     notes = Column(Text)
-    
+
     # Relationships
     kpi = relationship("KPI", back_populates="history")
 
 
 class KPIEmbedding(Base):
+    """A vector embedding associated with a KPI for semantic search."""
+
     __tablename__ = "kpi_embeddings"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     kpi_id = Column(Integer, ForeignKey("kpis.id"), nullable=False)
     embedding = Column("embedding", type_=None)  # Will be handled by pgvector
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     kpi = relationship("KPI", back_populates="embeddings")
 
 
 # Pydantic models for API
 class KPIBase(BaseModel):
+    """Shared KPI fields."""
+
     name: str
     description: Optional[str] = None
     category: KPICategory = KPICategory.OTHER
@@ -77,11 +90,15 @@ class KPIBase(BaseModel):
 
 
 class KPICreate(KPIBase):
+    """Payload for creating a KPI."""
+
     organization_id: int
     dashboard_id: Optional[int] = None
 
 
 class KPIUpdate(BaseModel):
+    """Mutable KPI fields."""
+
     name: Optional[str] = None
     description: Optional[str] = None
     category: Optional[KPICategory] = None
@@ -92,44 +109,60 @@ class KPIUpdate(BaseModel):
 
 
 class KPIHistoryCreate(BaseModel):
+    """Payload for recording a KPI value."""
+
     value: float
     notes: Optional[str] = None
 
 
 class KPIHistoryResponse(BaseModel):
+    """KPI history record returned by the API."""
+
     id: int
     kpi_id: int
     value: float
     recorded_at: datetime
     notes: Optional[str] = None
-    
+
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class KPIResponse(KPIBase):
+    """KPI record returned by the API."""
+
     id: int
     organization_id: int
     dashboard_id: Optional[int] = None
     created_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class KPIWithHistory(KPIResponse):
+    """KPI record including its history."""
+
     history: List[KPIHistoryResponse] = []
-    
+
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class KPIAnalytics(BaseModel):
+    """Computed analytics and insights for a KPI."""
+
     kpi_id: int
     trend: str  # "increasing", "decreasing", "stable"
     change_percentage: float
     period: str  # "week", "month", "quarter", "year"
     insights: List[str]
-    recommendations: List[str] 
+    recommendations: List[str]

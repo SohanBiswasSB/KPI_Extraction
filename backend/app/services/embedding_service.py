@@ -1,17 +1,22 @@
-import openai
-import numpy as np
+"""Embedding generation and vector-similarity search for documents and KPIs."""
+
+import logging
 from typing import List, Dict, Any, Optional
+
+import openai
+from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
-from sqlalchemy.orm import selectinload
-import json
 
 from app.core.config import settings
 from app.models.file import DocumentEmbedding
 from app.models.kpi import KPIEmbedding, KPI
 
+logger = logging.getLogger(__name__)
+
 
 class EmbeddingService:
+    """Generate embeddings and run semantic search over documents and KPIs."""
+
     def __init__(self):
         # Local-first: OpenAI-compatible embeddings server (Ollama: `nomic-embed-text`).
         self.client = openai.OpenAI(
@@ -29,8 +34,8 @@ class EmbeddingService:
                 input=text
             )
             return response.data[0].embedding
-        except Exception as e:
-            print(f"Error generating embedding: {e}")
+        except Exception as err:
+            logger.error("Error generating embedding: %s", err)
             # Return zero vector as fallback
             return [0.0] * self.vector_dimension
 
@@ -40,32 +45,34 @@ class EmbeddingService:
             chunk_size = settings.CHUNK_SIZE
         if overlap is None:
             overlap = settings.CHUNK_OVERLAP
-        
+
         chunks = []
         start = 0
-        
+
         while start < len(text):
             end = start + chunk_size
             chunk = text[start:end]
             chunks.append(chunk)
-            
+
             # Move start position with overlap
             start = end - overlap
             if start >= len(text):
                 break
-        
+
         return chunks
 
-    async def create_document_embeddings(self, file_id: int, text: str, db: AsyncSession) -> List[DocumentEmbedding]:
+    async def create_document_embeddings(
+        self, file_id: int, text: str, db: AsyncSession
+    ) -> List[DocumentEmbedding]:
         """Create embeddings for document chunks."""
         # Split text into chunks
         chunks = await self.chunk_text(text)
         embeddings = []
-        
+
         for i, chunk in enumerate(chunks):
             # Generate embedding
             embedding_vector = await self.generate_embedding(chunk)
-            
+
             # Create document embedding record
             doc_embedding = DocumentEmbedding(
                 file_id=file_id,
@@ -79,24 +86,26 @@ class EmbeddingService:
                 }
             )
             embeddings.append(doc_embedding)
-        
+
         return embeddings
 
-    async def create_kpi_embedding(self, kpi_id: int, kpi_text: str, db: AsyncSession) -> KPIEmbedding:
+    async def create_kpi_embedding(
+        self, kpi_id: int, kpi_text: str, db: AsyncSession
+    ) -> KPIEmbedding:
         """Create embedding for a KPI."""
         embedding_vector = await self.generate_embedding(kpi_text)
-        
+
         kpi_embedding = KPIEmbedding(
             kpi_id=kpi_id,
             embedding=embedding_vector
         )
-        
+
         return kpi_embedding
 
     async def search_documents(
-        self, 
-        query: str, 
-        organization_id: int, 
+        self,
+        query: str,
+        organization_id: int,
         file_ids: Optional[List[int]] = None,
         limit: int = 10,
         similarity_threshold: float = 0.7,
@@ -105,10 +114,10 @@ class EmbeddingService:
         """Search documents using vector similarity."""
         # Generate embedding for query
         query_embedding = await self.generate_embedding(query)
-        
+
         # Build search query
         search_query = """
-        SELECT 
+        SELECT
             de.content_chunk,
             de.file_id,
             uf.original_filename,
@@ -119,27 +128,27 @@ class EmbeddingService:
         JOIN uploaded_files uf ON de.file_id = uf.id
         WHERE uf.organization_id = $2
         """
-        
+
         params = [query_embedding, organization_id]
         param_count = 2
-        
+
         if file_ids:
             search_query += f" AND de.file_id = ANY(${param_count + 1})"
             params.append(file_ids)
             param_count += 1
-        
+
         search_query += f"""
         AND 1 - (de.embedding <=> $1) > ${param_count + 1}
         ORDER BY similarity_score DESC
         LIMIT ${param_count + 2}
         """
-        
+
         params.extend([similarity_threshold, limit])
-        
+
         # Execute search
-        result = await db.execute(text(search_query), params)
+        result = await db.execute(sql_text(search_query), params)
         rows = result.fetchall()
-        
+
         # Format results
         search_results = []
         for row in rows:
@@ -151,12 +160,12 @@ class EmbeddingService:
                 "chunk_metadata": row[4],
                 "similarity_score": float(row[5])
             })
-        
+
         return search_results
 
     async def search_kpis(
-        self, 
-        query: str, 
+        self,
+        query: str,
         organization_id: int,
         limit: int = 10,
         similarity_threshold: float = 0.7,
@@ -165,10 +174,10 @@ class EmbeddingService:
         """Search KPIs using vector similarity."""
         # Generate embedding for query
         query_embedding = await self.generate_embedding(query)
-        
+
         # Build search query
         search_query = """
-        SELECT 
+        SELECT
             k.name,
             k.description,
             k.category,
@@ -184,14 +193,14 @@ class EmbeddingService:
         ORDER BY similarity_score DESC
         LIMIT $4
         """
-        
+
         # Execute search
         result = await db.execute(
-            text(search_query), 
+            sql_text(search_query),
             [query_embedding, organization_id, similarity_threshold, limit]
         )
         rows = result.fetchall()
-        
+
         # Format results
         search_results = []
         for row in rows:
@@ -205,12 +214,12 @@ class EmbeddingService:
                 "kpi_id": row[6],
                 "similarity_score": float(row[7])
             })
-        
+
         return search_results
 
     async def semantic_search(
-        self, 
-        query: str, 
+        self,
+        query: str,
         organization_id: int,
         search_type: str = "both",  # "documents", "kpis", "both"
         limit: int = 10,
@@ -218,7 +227,7 @@ class EmbeddingService:
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Perform semantic search across documents and KPIs."""
         results = {}
-        
+
         if search_type in ["documents", "both"]:
             doc_results = await self.search_documents(
                 query=query,
@@ -227,7 +236,7 @@ class EmbeddingService:
                 db=db
             )
             results["documents"] = doc_results
-        
+
         if search_type in ["kpis", "both"]:
             kpi_results = await self.search_kpis(
                 query=query,
@@ -236,7 +245,7 @@ class EmbeddingService:
                 db=db
             )
             results["kpis"] = kpi_results
-        
+
         return results
 
     async def update_kpi_embeddings(self, kpi_id: int, db: AsyncSession) -> None:
@@ -246,22 +255,22 @@ class EmbeddingService:
             select(KPI).where(KPI.id == kpi_id)
         )
         kpi = result.scalar_one_or_none()
-        
+
         if not kpi:
             return
-        
+
         # Create text representation for embedding
         kpi_text = f"{kpi.name} {kpi.description or ''} {kpi.category.value} {kpi.unit or ''}"
-        
+
         # Check if embedding exists
         result = await db.execute(
             select(KPIEmbedding).where(KPIEmbedding.kpi_id == kpi_id)
         )
         existing_embedding = result.scalar_one_or_none()
-        
+
         # Generate new embedding
         new_embedding_vector = await self.generate_embedding(kpi_text)
-        
+
         if existing_embedding:
             # Update existing embedding
             existing_embedding.embedding = new_embedding_vector
@@ -272,7 +281,7 @@ class EmbeddingService:
                 embedding=new_embedding_vector
             )
             db.add(new_embedding)
-        
+
         await db.commit()
 
     async def batch_create_embeddings(self, texts: List[str]) -> List[List[float]]:
@@ -283,12 +292,14 @@ class EmbeddingService:
                 input=texts
             )
             return [data.embedding for data in response.data]
-        except Exception as e:
-            print(f"Error in batch embedding generation: {e}")
+        except Exception as err:
+            logger.error("Error in batch embedding generation: %s", err)
             # Return zero vectors as fallback
             return [[0.0] * self.vector_dimension for _ in texts]
 
-    async def get_embedding_statistics(self, organization_id: int, db: AsyncSession) -> Dict[str, Any]:
+    async def get_embedding_statistics(
+        self, organization_id: int, db: AsyncSession
+    ) -> Dict[str, Any]:
         """Get statistics about embeddings for an organization."""
         # Count document embeddings
         doc_count_query = """
@@ -297,9 +308,9 @@ class EmbeddingService:
         JOIN uploaded_files uf ON de.file_id = uf.id
         WHERE uf.organization_id = $1
         """
-        result = await db.execute(text(doc_count_query), [organization_id])
+        result = await db.execute(sql_text(doc_count_query), [organization_id])
         doc_count = result.scalar()
-        
+
         # Count KPI embeddings
         kpi_count_query = """
         SELECT COUNT(*) as count
@@ -307,9 +318,9 @@ class EmbeddingService:
         JOIN kpis k ON ke.kpi_id = k.id
         WHERE k.organization_id = $1
         """
-        result = await db.execute(text(kpi_count_query), [organization_id])
+        result = await db.execute(sql_text(kpi_count_query), [organization_id])
         kpi_count = result.scalar()
-        
+
         return {
             "document_embeddings": doc_count,
             "kpi_embeddings": kpi_count,
@@ -317,18 +328,18 @@ class EmbeddingService:
         }
 
     async def search_similar_kpis(
-        self, 
-        query_embedding: List[float], 
+        self,
+        query_embedding: List[float],
         db: AsyncSession,
         organization_id: Optional[int] = None,
         limit: int = 10,
         similarity_threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
         """Search for KPIs similar to the query embedding using vector similarity."""
-        
+
         # Build search query
         search_query = """
-        SELECT 
+        SELECT
             k.id,
             k.name,
             k.description,
@@ -345,28 +356,28 @@ class EmbeddingService:
         JOIN kpis k ON ke.kpi_id = k.id
         WHERE 1 - (ke.embedding <=> $1) >= $2
         """
-        
+
         params = [query_embedding, similarity_threshold]
         param_count = 2
-        
+
         # Add organization filter if provided
         if organization_id:
             param_count += 1
             search_query += f" AND k.organization_id = ${param_count}"
             params.append(organization_id)
-        
+
         # Add ordering and limit
         search_query += " ORDER BY similarity_score DESC"
-        
+
         if limit:
             param_count += 1
             search_query += f" LIMIT ${param_count}"
             params.append(limit)
-        
+
         # Execute query
-        result = await db.execute(text(search_query), params)
+        result = await db.execute(sql_text(search_query), params)
         rows = result.fetchall()
-        
+
         # Format results
         kpis = []
         for row in rows:
@@ -385,5 +396,5 @@ class EmbeddingService:
                 "similarity_score": float(row.similarity_score)
             }
             kpis.append(kpi_data)
-        
-        return kpis 
+
+        return kpis

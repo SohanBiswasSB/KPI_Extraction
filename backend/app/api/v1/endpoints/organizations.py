@@ -1,4 +1,6 @@
-from typing import List, Optional
+"""Organization endpoints: CRUD operations and user-organization membership management."""
+
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -27,13 +29,13 @@ async def get_organizations(
     query = select(Organization).options(
         selectinload(Organization.users)
     )
-    
+
     # Apply pagination
     query = query.offset(skip).limit(limit)
-    
+
     result = await db.execute(query)
     organizations = result.scalars().all()
-    
+
     # Filter organizations based on user access
     accessible_organizations = []
     for org in organizations:
@@ -43,7 +45,7 @@ async def get_organizations(
         if (current_user.role == UserRole.ADMIN or
             any(user_org.user_id == current_user.id for user_org in org.users)):
             accessible_organizations.append(org)
-    
+
     return accessible_organizations
 
 
@@ -60,15 +62,15 @@ async def get_organization(
         ).where(Organization.id == organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     # Check access permissions
     if (current_user.role != UserRole.ADMIN and
         not any(user_org.user_id == current_user.id for user_org in organization.users)):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     return organization
 
 
@@ -85,27 +87,27 @@ async def create_organization(
     )
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Organization with this name already exists")
-    
+
     # Create organization
     organization = Organization(
         name=organization_data.name,
         description=organization_data.description
     )
-    
+
     db.add(organization)
     await db.commit()
     await db.refresh(organization)
-    
+
     # Add current user as admin of the organization
     user_org = UserOrganization(
         user_id=current_user.id,
         organization_id=organization.id,
         role=UserRole.MANAGER  # Creator becomes manager
     )
-    
+
     db.add(user_org)
     await db.commit()
-    
+
     return organization
 
 
@@ -121,10 +123,10 @@ async def update_organization(
         select(Organization).where(Organization.id == organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     # Check permissions: user must be manager of the organization or admin
     result = await db.execute(
         select(UserOrganization).where(
@@ -135,11 +137,11 @@ async def update_organization(
         )
     )
     user_org = result.scalar_one_or_none()
-    
-    if (current_user.role != UserRole.ADMIN and 
+
+    if (current_user.role != UserRole.ADMIN and
         (not user_org or user_org.role not in [UserRole.MANAGER, UserRole.ADMIN])):
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Check name uniqueness if being updated
     if "name" in organization_data.dict(exclude_unset=True):
         result = await db.execute(
@@ -151,16 +153,19 @@ async def update_organization(
             )
         )
         if result.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="Organization with this name already exists")
-    
+            raise HTTPException(
+                status_code=400,
+                detail="Organization with this name already exists",
+            )
+
     # Update fields
     update_data = organization_data.dict(exclude_unset=True)
     for field, value in update_data.items():
         setattr(organization, field, value)
-    
+
     await db.commit()
     await db.refresh(organization)
-    
+
     return organization
 
 
@@ -175,13 +180,13 @@ async def delete_organization(
         select(Organization).where(Organization.id == organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     await db.delete(organization)
     await db.commit()
-    
+
     return {"message": "Organization deleted successfully"}
 
 
@@ -198,10 +203,10 @@ async def add_user_to_organization(
         select(Organization).where(Organization.id == organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     # Check permissions: user must be manager of the organization or admin
     result = await db.execute(
         select(UserOrganization).where(
@@ -212,20 +217,20 @@ async def add_user_to_organization(
         )
     )
     user_org = result.scalar_one_or_none()
-    
-    if (current_user.role != UserRole.ADMIN and 
+
+    if (current_user.role != UserRole.ADMIN and
         (not user_org or user_org.role not in [UserRole.MANAGER, UserRole.ADMIN])):
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Verify user exists
     result = await db.execute(
         select(User).where(User.id == user_org_data.user_id)
     )
     user = result.scalar_one_or_none()
-    
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     # Check if user is already in the organization
     result = await db.execute(
         select(UserOrganization).where(
@@ -237,18 +242,18 @@ async def add_user_to_organization(
     )
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="User is already in this organization")
-    
+
     # Create user-organization relationship
     user_org = UserOrganization(
         user_id=user_org_data.user_id,
         organization_id=organization_id,
         role=user_org_data.role
     )
-    
+
     db.add(user_org)
     await db.commit()
     await db.refresh(user_org)
-    
+
     return user_org
 
 
@@ -266,10 +271,10 @@ async def update_user_organization_role(
         select(Organization).where(Organization.id == organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     # Check permissions: user must be manager of the organization or admin
     result = await db.execute(
         select(UserOrganization).where(
@@ -280,11 +285,11 @@ async def update_user_organization_role(
         )
     )
     current_user_org = result.scalar_one_or_none()
-    
-    if (current_user.role != UserRole.ADMIN and 
+
+    if (current_user.role != UserRole.ADMIN and
         (not current_user_org or current_user_org.role not in [UserRole.MANAGER, UserRole.ADMIN])):
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Get user-organization relationship to update
     result = await db.execute(
         select(UserOrganization).where(
@@ -295,18 +300,18 @@ async def update_user_organization_role(
         )
     )
     user_org = result.scalar_one_or_none()
-    
+
     if not user_org:
         raise HTTPException(status_code=404, detail="User not found in organization")
-    
+
     # Update role
     update_data = user_org_data.dict(exclude_unset=True)
     for field, value in update_data.items():
         setattr(user_org, field, value)
-    
+
     await db.commit()
     await db.refresh(user_org)
-    
+
     return user_org
 
 
@@ -323,10 +328,10 @@ async def remove_user_from_organization(
         select(Organization).where(Organization.id == organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     # Check permissions: user must be manager of the organization or admin
     result = await db.execute(
         select(UserOrganization).where(
@@ -337,15 +342,15 @@ async def remove_user_from_organization(
         )
     )
     current_user_org = result.scalar_one_or_none()
-    
-    if (current_user.role != UserRole.ADMIN and 
+
+    if (current_user.role != UserRole.ADMIN and
         (not current_user_org or current_user_org.role not in [UserRole.MANAGER, UserRole.ADMIN])):
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Prevent self-removal
     if current_user.id == user_id:
         raise HTTPException(status_code=400, detail="Cannot remove yourself from organization")
-    
+
     # Get user-organization relationship to remove
     result = await db.execute(
         select(UserOrganization).where(
@@ -356,13 +361,13 @@ async def remove_user_from_organization(
         )
     )
     user_org = result.scalar_one_or_none()
-    
+
     if not user_org:
         raise HTTPException(status_code=404, detail="User not found in organization")
-    
+
     await db.delete(user_org)
     await db.commit()
-    
+
     return {"message": "User removed from organization successfully"}
 
 
@@ -380,10 +385,10 @@ async def get_organization_users(
         select(Organization).where(Organization.id == organization_id)
     )
     organization = result.scalar_one_or_none()
-    
+
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
-    
+
     # Check access permissions
     result = await db.execute(
         select(UserOrganization).where(
@@ -394,10 +399,10 @@ async def get_organization_users(
         )
     )
     user_org = result.scalar_one_or_none()
-    
+
     if (current_user.role != UserRole.ADMIN and not user_org):
         raise HTTPException(status_code=403, detail="Access denied")
-    
+
     # Get organization users
     result = await db.execute(
         select(UserOrganization).options(
@@ -407,5 +412,5 @@ async def get_organization_users(
         ).offset(skip).limit(limit)
     )
     users = result.scalars().all()
-    
-    return users 
+
+    return users

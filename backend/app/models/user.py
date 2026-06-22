@@ -1,14 +1,19 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, Text
+"""Database models and Pydantic schemas for users and authentication."""
+import enum
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from app.core.database import Base
-import enum
 from pydantic import BaseModel, EmailStr
-from typing import Optional
-from datetime import datetime
+
+from app.core.database import Base
 
 
 class UserRole(str, enum.Enum):
+    """Access levels available to a user."""
+
     ADMIN = "admin"
     MANAGER = "manager"
     ANALYST = "analyst"
@@ -16,8 +21,10 @@ class UserRole(str, enum.Enum):
 
 
 class User(Base):
+    """An application user account."""
+
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     username = Column(String(100), unique=True, index=True, nullable=False)
@@ -27,7 +34,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    
+
     # Relationships
     dashboards = relationship("Dashboard", back_populates="created_by_user")
     kpis = relationship("KPI", back_populates="created_by_user")
@@ -37,6 +44,8 @@ class User(Base):
 
 # Pydantic models for API
 class UserBase(BaseModel):
+    """Shared user fields."""
+
     email: EmailStr
     username: str
     full_name: Optional[str] = None
@@ -44,10 +53,14 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
+    """Payload for creating a user."""
+
     password: str
 
 
 class UserUpdate(BaseModel):
+    """Mutable user fields."""
+
     email: Optional[EmailStr] = None
     username: Optional[str] = None
     full_name: Optional[str] = None
@@ -56,31 +69,43 @@ class UserUpdate(BaseModel):
 
 
 class UserInDB(UserBase):
+    """User record as stored in the database."""
+
     id: int
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class UserResponse(UserBase):
+    """User record returned by the API."""
+
     id: int
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class UserLogin(BaseModel):
+    """Login credentials payload."""
+
     email: EmailStr
     password: str
 
 
 class Token(BaseModel):
+    """Issued authentication token bundle."""
+
     access_token: str
     token_type: str = "bearer"
     expires_in: int
@@ -88,5 +113,7 @@ class Token(BaseModel):
 
 
 class TokenData(BaseModel):
+    """Decoded token claims."""
+
     email: Optional[str] = None
-    user_id: Optional[int] = None 
+    user_id: Optional[int] = None
