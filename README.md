@@ -25,8 +25,8 @@ on top when an OpenAI key is configured.
 | Input | Backend | Notes |
 |-------|---------|-------|
 | Born-digital PDF | `pdfplumber` (dual line/text strategy) | Picks whichever strategy yields more cells |
-| Scanned / image PDF | PyMuPDF render + Tesseract OCR | Automatic fallback when no native tables are found |
-| Images (PNG/JPG/TIFF) | Tesseract OCR | Row/column reconstruction from word boxes |
+| Scanned / image PDF | Vision-LLM (Qwen2.5-VL) **or** PyMuPDF + Tesseract OCR | VLM used first when `ENABLE_VLM=true`; OCR otherwise |
+| Images (PNG/JPG/TIFF) | Vision-LLM or Tesseract OCR | Same fallback chain as scanned PDFs |
 | Excel (`.xlsx`, `.xls`) | pandas | One table per sheet, structure preserved |
 | CSV | pandas | Header + rows preserved |
 | Word (`.docx`) | python-docx | Every `<w:tbl>` becomes a table |
@@ -113,12 +113,30 @@ uvicorn main:app --reload
 
 ---
 
+## Local LLM (no API keys)
+
+The LLM steps default to a **local OpenAI-compatible server** (Ollama), so no API key is
+needed. Configure via `LLM_BASE_URL` / `LLM_MODEL` / `LLM_VISION_MODEL` / `LLM_EMBEDDING_MODEL`.
+
+```bash
+ollama serve
+ollama pull qwen2.5:7b-instruct     # KPI structuring (text)
+ollama pull qwen2.5vl:7b            # scanned-page tables (vision) — needs ENABLE_VLM=true
+ollama pull nomic-embed-text        # embeddings (768-dim; matches init.sql)
+```
+
+Set `ENABLE_VLM=true` to send scanned pages to the vision model before OCR. Leaving it off
+keeps scanned-doc extraction fully deterministic/offline (Tesseract only). Try the vision
+path from the CLI: `python scripts/extract_tables_cli.py scanned.pdf --vlm`.
+
 ## Notes & limitations
 
 - **OCR is optional.** If `PyMuPDF`/`pytesseract`/Tesseract aren't installed, born-digital
   PDFs and office formats still work; scanned PDFs simply return no tables (logged, not fatal).
-- **AI is optional.** Without `OPENAI_API_KEY`, table extraction is unaffected; only the
-  KPI-naming and embedding steps are skipped.
+- **The vision path makes scanned-doc extraction depend on the LLM.** It is gated behind
+  `ENABLE_VLM` precisely so digital docs and the OCR fallback stay LLM-free.
+- **AI is optional.** Without a reachable LLM server, table extraction is unaffected; only
+  the KPI-naming and embedding steps are skipped.
 - OCR table reconstruction is heuristic (row clustering + column-band assignment) and is
   marked with lower `confidence`; verify low-confidence tables before relying on them.
 - The whitespace (`text`) pdfplumber strategy can over-split cells on complex layouts; ruled

@@ -146,12 +146,7 @@ class FileService:
         for row in existing.scalars().all():
             await db.delete(row)
 
-        tables = extract_tables(
-            record.file_path,
-            ocr_dpi=settings.OCR_DPI,
-            ocr_lang=settings.OCR_LANG,
-            allow_ocr=settings.ENABLE_OCR,
-        )
+        tables = extract_tables(record.file_path, **self._engine_opts())
         stored: List[ExtractedTable] = []
         for t in tables:
             row = ExtractedTable(
@@ -186,12 +181,23 @@ class FileService:
 
     def preview_tables(self, file_path: str, limit: int = 5, rows: int = 10) -> Dict[str, Any]:
         """Stateless preview straight off disk (no DB write)."""
-        tables = extract_tables(
-            file_path, ocr_dpi=settings.OCR_DPI, ocr_lang=settings.OCR_LANG,
-            allow_ocr=settings.ENABLE_OCR,
-        )
+        tables = extract_tables(file_path, **self._engine_opts())
         previews = [t.preview(max_rows=rows) for t in tables[:limit]]
         return {"tables_found": len(tables), "tables": previews}
+
+    @staticmethod
+    def _engine_opts() -> Dict[str, Any]:
+        """Shared extraction-engine options derived from settings."""
+        return {
+            "ocr_dpi": settings.OCR_DPI,
+            "ocr_lang": settings.OCR_LANG,
+            "allow_ocr": settings.ENABLE_OCR,
+            "allow_vlm": settings.ENABLE_VLM,
+            "vlm_model": settings.LLM_VISION_MODEL,
+            "vlm_base_url": settings.LLM_BASE_URL,
+            "vlm_api_key": settings.LLM_API_KEY or settings.OPENAI_API_KEY,
+            "vlm_max_pages": settings.VLM_MAX_PAGES,
+        }
 
     def export_file_tables(self, tables: List[ExtractedTable]) -> Dict[str, Any]:
         """Write ExtractedTable rows to XLSX + per-table CSV."""

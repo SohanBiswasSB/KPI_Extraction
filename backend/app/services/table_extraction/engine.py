@@ -12,7 +12,7 @@ import uuid
 from typing import List, Optional, Set
 
 from .models import ExtractedTable
-from . import pdf_tables, office_tables, ocr_tables
+from . import pdf_tables, office_tables, ocr_tables, vlm_tables
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,17 @@ def extract_tables(
     ocr_dpi: int = 200,
     ocr_lang: str = "eng",
     allow_ocr: bool = True,
+    allow_vlm: bool = False,
+    vlm_model: Optional[str] = None,
+    vlm_base_url: Optional[str] = None,
+    vlm_api_key: Optional[str] = None,
+    vlm_max_pages: int = 10,
 ) -> List[ExtractedTable]:
     """Extract structured tables from any supported document.
 
-    For PDFs: try pdfplumber first; if it finds nothing and OCR is available,
-    fall back to rendering + Tesseract (scanned/image PDFs).
+    For scanned PDFs/images the fallback order is: vision-LLM (if allow_vlm) →
+    Tesseract OCR (if allow_ocr). For born-digital PDFs, pdfplumber runs first
+    and the fallbacks only fire when it finds nothing.
     """
     ext = _ext(path)
     if ext not in SUPPORTED_EXTENSIONS:
@@ -54,15 +60,27 @@ def extract_tables(
     if ext in _DOCX:
         return office_tables.extract_docx(path)
     if ext in _IMAGE:
-        return _safe_ocr_image(path, ocr_lang, allow_ocr)
+        return _scanned_image(
+            path, ocr_lang, allow_ocr, allow_vlm, vlm_model, vlm_base_url, vlm_api_key
+        )
 
-    # PDF: born-digital first, OCR fallback for scanned docs.
+    # PDF: born-digital first, then VLM, then OCR.
     tables = pdf_tables.extract(path, page_filter=page_filter)
     if tables:
         return tables
 
+    if allow_vlm and vlm_model and vlm_base_url:
+        logger.info("No native tables in %s; trying vision-LLM.", path)
+        vlm_tabs = vlm_tables.extract_pdf(
+            path, model=vlm_model, base_url=vlm_base_url, api_key=vlm_api_key,
+            dpi=ocr_dpi, page_filter=page_filter, max_pages=vlm_max_pages,
+        )
+        if vlm_tabs:
+            return vlm_tabs
+        logger.info("Vision-LLM found no tables in %s; trying OCR.", path)
+
     if allow_ocr and ocr_tables.is_available():
-        logger.info("No native tables in %s; falling back to OCR.", path)
+        logger.info("Falling back to OCR for %s.", path)
         try:
             return ocr_tables.extract_pdf(
                 path, dpi=ocr_dpi, lang=ocr_lang, page_filter=page_filter
@@ -74,13 +92,21 @@ def extract_tables(
     return tables
 
 
-def _safe_ocr_image(path: str, lang: str, allow_ocr: bool) -> List[ExtractedTable]:
-    if not allow_ocr:
+def _scanned_image(path: str, lang: str, allow_ocr: bool, allow_vlm: bool,
+                   vlm_model: Optional[str], vlm_base_url: Optional[str],
+                   vlm_api_key: Optional[str]) -> List[ExtractedTable]:
+    if allow_vlm and vlm_model and vlm_base_url:
+        vlm_tabs = vlm_tables.extract_image(
+            path, model=vlm_model, base_url=vlm_base_url, api_key=vlm_api_key
+        )
+        if vlm_tabs:
+            return vlm_tabs
+    if allow_ocr and ocr_tables.is_available():
+        return ocr_tables.extract_image(path, lang=lang)
+    if not allow_ocr and not allow_vlm:
         return []
-    if not ocr_tables.is_available():
-        logger.warning("Image input %s requires OCR deps which are missing.", path)
-        return []
-    return ocr_tables.extract_image(path, lang=lang)
+    logger.warning("Image input %s: no usable OCR/VLM backend available.", path)
+    return []
 
 
 def export_tables(tables: List[ExtractedTable], out_dir: str) -> dict:

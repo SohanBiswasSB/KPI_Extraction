@@ -28,8 +28,13 @@ def main() -> int:
     ap.add_argument("--export", metavar="DIR", help="Also write XLSX + per-table CSV to DIR")
     ap.add_argument("--json", action="store_true", help="Print full tables as JSON")
     ap.add_argument("--no-ocr", action="store_true", help="Disable the scanned-PDF OCR fallback")
-    ap.add_argument("--dpi", type=int, default=200, help="OCR render DPI (default 200)")
+    ap.add_argument("--dpi", type=int, default=200, help="OCR/VLM render DPI (default 200)")
     ap.add_argument("--lang", default="eng", help="Tesseract language(s), e.g. eng+hin")
+    ap.add_argument("--vlm", action="store_true",
+                    help="Use a vision-LLM (Qwen2.5-VL via Ollama) for scanned pages")
+    ap.add_argument("--vlm-model", default="qwen2.5vl:7b", help="Vision model name")
+    ap.add_argument("--vlm-base-url", default="http://localhost:11434/v1",
+                    help="OpenAI-compatible base URL for the vision model")
     args = ap.parse_args()
 
     if not os.path.exists(args.file):
@@ -37,7 +42,8 @@ def main() -> int:
         return 2
 
     tables = extract_tables(
-        args.file, ocr_dpi=args.dpi, ocr_lang=args.lang, allow_ocr=not args.no_ocr
+        args.file, ocr_dpi=args.dpi, ocr_lang=args.lang, allow_ocr=not args.no_ocr,
+        allow_vlm=args.vlm, vlm_model=args.vlm_model, vlm_base_url=args.vlm_base_url,
     )
     print(f"Found {len(tables)} table(s) in {args.file}\n")
 
