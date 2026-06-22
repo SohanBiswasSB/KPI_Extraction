@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: kpi_postgres
+    environment:
+      POSTGRES_DB: kpi_platform
+      POSTGRES_USER: kpi_user
+      POSTGRES_PASSWORD: kpi_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - kpi_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kpi_user -d kpi_platform"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kpi_backend
+    environment:
+      - DATABASE_URL=postgresql://kpi_user:kpi_password@postgres:5432/kpi_platform
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-change-in-production}
+      - JWT_SECRET=${JWT_SECRET:-your-jwt-secret-change-in-production}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kpi_network
+    restart: unless-stopped
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: kpi_frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_APP_NAME=KPI Extraction Platform
+      - NODE_ENV=development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    command: ["npm", "run", "dev"]
+    depends_on:
+      - backend
+    networks:
+      - kpi_network
+    restart: unless-stopped
+
+  # Redis for caching and session storage
+  redis:
+    image: redis:7-alpine
+    container_name: kpi_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kpi_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  kpi_network:
+    driver: bridge 
