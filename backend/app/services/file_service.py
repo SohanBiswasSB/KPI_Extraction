@@ -25,7 +25,10 @@ from app.core.config import settings
 from app.models.file import UploadedFile, FileStatus, ExtractedTable
 from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
-from app.services.table_extraction import extract_tables, export_tables, SUPPORTED_EXTENSIONS
+from app.services.table_extraction import (
+    extract_tables, export_tables, SUPPORTED_EXTENSIONS,
+)
+from app.services.table_extraction.models import ExtractedTable as DomainTable
 
 logger = logging.getLogger(__name__)
 
@@ -209,8 +212,6 @@ class FileService:
 
     def export_file_tables(self, tables: List[ExtractedTable]) -> Dict[str, Any]:
         """Write ExtractedTable rows to XLSX + per-table CSV."""
-        from app.services.table_extraction.models import ExtractedTable as DomainTable
-
         domain = [
             DomainTable(
                 page=t.page, index=t.table_index, rows=t.rows, source=t.source or "",

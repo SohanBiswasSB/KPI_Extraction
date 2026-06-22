@@ -11,14 +11,12 @@ good-names = i,j,k,x,y,w,h,t,c,r,b,l,s,df,id,db,ci,ri,ap,fitz,openai,Image,pytes
 
 [MESSAGES CONTROL]
 # Disabled checks are deliberate design patterns in this codebase, not defects:
-#   - import-outside-toplevel: heavy/optional deps (pandas, python-docx) are imported lazily
 #   - broad-exception-caught: the extraction pipeline is best-effort and must never crash
 #   - duplicate-code: the optional-dependency import guards intentionally repeat
 #   - too-many-*: the engine entry point exposes a deliberately wide keyword API
 #   - unused-argument: FastAPI injects auth/db dependencies (e.g. current_user) that
 #     run as a side effect via Depends even when a handler doesn't reference them
 disable =
-    import-outside-toplevel,
     unused-argument,
     broad-exception-caught,
     duplicate-code,

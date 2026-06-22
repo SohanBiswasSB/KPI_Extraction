@@ -3,6 +3,7 @@ import os
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -334,7 +335,6 @@ async def export_extracted_tables(
         raise HTTPException(status_code=404, detail="No tables extracted for this file")
 
     out = file_service.export_file_tables(tables)
-    from fastapi.responses import FileResponse as FastAPIFileResponse
     return FastAPIFileResponse(
         path=out["xlsx"],
         filename=f"tables_file_{file_id}.xlsx",
@@ -360,8 +360,6 @@ async def download_file(
         raise HTTPException(status_code=404, detail="File not found on disk")
 
     # Return file for download
-    from fastapi.responses import FileResponse as FastAPIFileResponse
-
     return FastAPIFileResponse(
         path=file.file_path,
         filename=file.original_filename,

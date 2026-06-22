@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.core.security import get_current_active_user, require_role, UserRole
 from app.models.kpi import KPI, KPIHistory
 from app.models.dashboard import Dashboard
+from app.models.organization import UserOrganization
 from app.models.user import User
 from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
@@ -61,7 +62,6 @@ async def get_analytics_overview(
     # Verify organization access
     if current_user.role != UserRole.ADMIN:
         # Check if user belongs to organization
-        from app.models.organization import UserOrganization
         result = await db.execute(
             select(UserOrganization).where(
                 and_(
@@ -147,7 +147,6 @@ async def analyze_kpi_trends(
     """Analyze trends for specific KPIs."""
     # Verify organization access
     if current_user.role != UserRole.ADMIN:
-        from app.models.organization import UserOrganization
         result = await db.execute(
             select(UserOrganization).where(
                 and_(
@@ -207,7 +206,6 @@ async def natural_language_query(
     """Answer natural language queries about KPI data."""
     # Verify organization access
     if current_user.role != UserRole.ADMIN:
-        from app.models.organization import UserOrganization
         result = await db.execute(
             select(UserOrganization).where(
                 and_(
@@ -249,7 +247,6 @@ async def get_kpi_recommendations(
     """Get AI-powered KPI recommendations for an organization."""
     # Verify organization access
     if current_user.role != UserRole.ADMIN:
-        from app.models.organization import UserOrganization
         result = await db.execute(
             select(UserOrganization).where(
                 and_(
@@ -277,7 +274,6 @@ async def generate_report(
     """Generate comprehensive AI-powered reports."""
     # Verify organization access
     if current_user.role != UserRole.ADMIN:
-        from app.models.organization import UserOrganization
         result = await db.execute(
             select(UserOrganization).where(
                 and_(
@@ -333,7 +329,6 @@ async def get_performance_metrics(
     """Get performance metrics and comparisons."""
     # Verify organization access
     if current_user.role != UserRole.ADMIN:
-        from app.models.organization import UserOrganization
         result = await db.execute(
             select(UserOrganization).where(
                 and_(
@@ -432,7 +427,6 @@ async def search_analytics(
     """Search through KPI data and analytics using semantic search."""
     # Verify organization access
     if current_user.role != UserRole.ADMIN:
-        from app.models.organization import UserOrganization
         result = await db.execute(
             select(UserOrganization).where(
                 and_(

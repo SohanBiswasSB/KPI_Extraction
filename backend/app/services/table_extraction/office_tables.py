@@ -9,6 +9,7 @@ import logging
 from typing import List
 
 import pandas as pd
+from docx import Document
 
 from .models import ExtractedTable
 
@@ -47,8 +48,6 @@ def extract_csv(path: str) -> List[ExtractedTable]:
 
 def extract_docx(path: str) -> List[ExtractedTable]:
     """Every <w:tbl> in the document becomes an ExtractedTable."""
-    from docx import Document  # imported lazily; heavy-ish and optional
-
     doc = Document(path)
     tables: List[ExtractedTable] = []
     for tidx, table in enumerate(doc.tables):
