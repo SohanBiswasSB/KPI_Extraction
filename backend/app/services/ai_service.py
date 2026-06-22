@@ -16,7 +16,12 @@ from app.services.embedding_service import EmbeddingService
 
 class AIService:
     def __init__(self):
-        self.client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        # Local-first: talk to an OpenAI-compatible server (Ollama by default).
+        # A non-empty key is required by the client even when the server ignores it.
+        self.client = openai.OpenAI(
+            base_url=settings.LLM_BASE_URL,
+            api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "ollama",
+        )
         self.embedding_service = EmbeddingService()
         
         # Common KPI patterns and keywords
@@ -77,7 +82,7 @@ class AIService:
             """
             
             response = self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 max_tokens=1000
@@ -223,7 +228,7 @@ class AIService:
             """
             
             response = self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=800
@@ -322,7 +327,7 @@ class AIService:
             """
             
             response = self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=600
@@ -402,7 +407,7 @@ class AIService:
             """
             
             response = self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=800
@@ -455,7 +460,7 @@ class AIService:
             
             # Generate embedding using OpenAI
             embedding_response = self.client.embeddings.create(
-                model="text-embedding-3-small",
+                model=settings.LLM_EMBEDDING_MODEL,
                 input=kpi_text
             )
             
@@ -492,7 +497,7 @@ class AIService:
         try:
             # Generate embedding for the search query
             embedding_response = self.client.embeddings.create(
-                model="text-embedding-3-small",
+                model=settings.LLM_EMBEDDING_MODEL,
                 input=query
             )
             
@@ -567,7 +572,7 @@ class AIService:
             """
             
             response = self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=1000

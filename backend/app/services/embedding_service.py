@@ -13,8 +13,12 @@ from app.models.kpi import KPIEmbedding, KPI
 
 class EmbeddingService:
     def __init__(self):
-        self.client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-        self.embedding_model = settings.OPENAI_EMBEDDING_MODEL
+        # Local-first: OpenAI-compatible embeddings server (Ollama: `nomic-embed-text`).
+        self.client = openai.OpenAI(
+            base_url=settings.LLM_BASE_URL,
+            api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "ollama",
+        )
+        self.embedding_model = settings.LLM_EMBEDDING_MODEL
         self.vector_dimension = settings.VECTOR_DIMENSION
 
     async def generate_embedding(self, text: str) -> List[float]:

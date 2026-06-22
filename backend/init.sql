@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
     id SERIAL PRIMARY KEY,
     file_id INTEGER REFERENCES uploaded_files(id) ON DELETE CASCADE,
     content_chunk TEXT NOT NULL,
-    embedding vector(1536), -- OpenAI embedding dimension
+    embedding vector(768), -- must match LLM_EMBEDDING_MODEL (nomic-embed-text = 768)
     chunk_index INTEGER,
     metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
 CREATE TABLE IF NOT EXISTS kpi_embeddings (
     id SERIAL PRIMARY KEY,
     kpi_id INTEGER REFERENCES kpis(id) ON DELETE CASCADE,
-    embedding vector(1536),
+    embedding vector(768), -- must match LLM_EMBEDDING_MODEL (nomic-embed-text = 768)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -19,11 +19,20 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
-    # OpenAI settings
+    # LLM settings — local-first via an OpenAI-compatible server (Ollama/vLLM/LM Studio).
+    # No API key required for local models; LLM_API_KEY is any non-empty placeholder.
+    # Point LLM_BASE_URL at a hosted OpenAI endpoint instead to use cloud models.
+    LLM_BASE_URL: str = "http://localhost:11434/v1"   # Ollama default
+    LLM_API_KEY: Optional[str] = None                  # falls back to "ollama" if unset
+    LLM_MODEL: str = "qwen2.5:7b-instruct"             # text → KPI structuring
+    LLM_VISION_MODEL: str = "qwen2.5vl:7b"             # vision → tables from page images
+    LLM_EMBEDDING_MODEL: str = "nomic-embed-text"      # local embeddings (768-dim)
+
+    # Back-compat: legacy code/env may still reference these.
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-4"
-    OPENAI_EMBEDDING_MODEL: str = "text-embedding-ada-002"
-    
+    OPENAI_MODEL: str = "qwen2.5:7b-instruct"
+    OPENAI_EMBEDDING_MODEL: str = "nomic-embed-text"
+
     # File upload settings
     UPLOAD_DIR: str = "uploads"
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
@@ -41,8 +50,15 @@ class Settings(BaseSettings):
 
     # Table-extraction / OCR settings
     ENABLE_OCR: bool = True          # fall back to OCR for scanned PDFs / images
-    OCR_DPI: int = 200               # render DPI for the OCR fallback
+    OCR_DPI: int = 200               # render DPI for the OCR/VLM fallback
     OCR_LANG: str = "eng"            # Tesseract language code(s), e.g. "eng+hin"
+
+    # Vision-LLM fallback for scanned pages (Qwen2.5-VL via LLM_BASE_URL).
+    # When enabled, a page with no native tables is sent as an image to the VLM
+    # *before* plain OCR. This makes scanned-doc extraction depend on the LLM;
+    # leave it off to keep extraction fully deterministic/offline.
+    ENABLE_VLM: bool = False
+    VLM_MAX_PAGES: int = 10          # cap pages sent to the VLM per document
     
     # CORS settings
     ALLOWED_HOSTS: List[str] = [
@@ -56,7 +72,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     
     # Vector database settings
-    VECTOR_DIMENSION: int = 1536  # OpenAI embedding dimension
+    VECTOR_DIMENSION: int = 768  # nomic-embed-text dimension (must match init.sql + LLM_EMBEDDING_MODEL)
     
     # Pagination settings
     DEFAULT_PAGE_SIZE: int = 20
