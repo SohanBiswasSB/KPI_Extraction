@@ -1,21 +1,22 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from sqlalchemy.orm import selectinload
+"""File upload and table/KPI extraction API endpoints."""
 import os
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user, require_role, UserRole
 from app.models.file import (
-    UploadedFile, ExtractedKPI, ExtractedTable, DocumentEmbedding,
+    UploadedFile, ExtractedKPI,
     FileResponse, ExtractedKPIResponse, ExtractedTableResponse,
-    TablePreviewResponse, FileProcessingResult,
-    FileUploadResponse, DocumentSearchQuery, DocumentSearchResult
+    TablePreviewResponse, FileUploadResponse,
+    DocumentSearchQuery, DocumentSearchResult,
 )
 from app.models.user import User
 from app.services.file_service import FileService
-from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
 from app.core.config import settings
 
@@ -37,7 +38,7 @@ async def get_files(
         selectinload(UploadedFile.organization),
         selectinload(UploadedFile.uploaded_by_user)
     )
-    
+
     # Filter by organization
     if organization_id:
         query = query.where(UploadedFile.organization_id == organization_id)
@@ -45,20 +46,20 @@ async def get_files(
         # If no organization specified, show files from user's organizations
         # This is a simplified approach - in a real app you'd join with user_organizations
         pass
-    
+
     # Filter by status
     if status:
         query = query.where(UploadedFile.status == status)
-    
+
     # Filter by file type
     if file_type:
         query = query.where(UploadedFile.file_type == file_type)
-    
+
     query = query.offset(skip).limit(limit)
-    
+
     result = await db.execute(query)
     files = result.scalars().all()
-    
+
     return files
 
 
@@ -77,10 +78,10 @@ async def get_file(
         ).where(UploadedFile.id == file_id)
     )
     file = result.scalar_one_or_none()
-    
+
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     return file
 
 
@@ -121,7 +122,7 @@ async def upload_file(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}") from e
 
 
 @router.delete("/{file_id}")
@@ -133,22 +134,22 @@ async def delete_file(
     """Delete a file."""
     result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
     file = result.scalar_one_or_none()
-    
+
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Check permissions: uploader or admin can delete
     if file.uploaded_by != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Delete physical file
     if file.file_path and os.path.exists(file.file_path):
         os.remove(file.file_path)
-    
+
     # Delete from database
     await db.delete(file)
     await db.commit()
-    
+
     return {"message": "File deleted successfully"}
 
 
@@ -164,10 +165,10 @@ async def get_extracted_kpis(
     # Verify file exists
     result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
     file = result.scalar_one_or_none()
-    
+
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Get extracted KPIs
     result = await db.execute(
         select(ExtractedKPI)
@@ -176,7 +177,7 @@ async def get_extracted_kpis(
         .limit(limit)
     )
     kpis = result.scalars().all()
-    
+
     return kpis
 
 
@@ -189,25 +190,25 @@ async def reprocess_file(
     """Reprocess a file for KPI extraction."""
     result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
     file = result.scalar_one_or_none()
-    
+
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Check permissions: uploader or admin can reprocess
     if file.uploaded_by != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
-    
+
     # Initialize services
     file_service = FileService()
-    
+
     try:
         # Reprocess file
         await file_service.process_file_async(file_id, db)
-        
+
         return {"message": "File reprocessing started"}
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}") from e
 
 
 @router.post("/search", response_model=List[DocumentSearchResult])
@@ -218,7 +219,7 @@ async def search_documents(
 ):
     """Search documents using semantic search."""
     embedding_service = EmbeddingService()
-    
+
     try:
         # Perform semantic search
         results = await embedding_service.semantic_search(
@@ -227,11 +228,11 @@ async def search_documents(
             search_query.limit or 10,
             db
         )
-        
+
         return results
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}") from e
 
 
 @router.get("/{file_id}/status")
@@ -245,10 +246,10 @@ async def get_file_status(
         select(UploadedFile).where(UploadedFile.id == file_id)
     )
     file = result.scalar_one_or_none()
-    
+
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     return {
         "file_id": file.id,
         "status": file.status,
@@ -267,10 +268,10 @@ async def extract_kpis_from_file(
     """Manually trigger KPI extraction from a file."""
     result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
     file = result.scalar_one_or_none()
-    
+
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Check permissions: uploader or admin can extract KPIs
     if file.uploaded_by != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
@@ -287,7 +288,7 @@ async def extract_kpis_from_file(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"KPI extraction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"KPI extraction failed: {str(e)}") from e
 
 
 @router.get("/{file_id}/tables", response_model=List[ExtractedTableResponse])
@@ -350,19 +351,19 @@ async def download_file(
     """Download a file."""
     result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
     file = result.scalar_one_or_none()
-    
+
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Check if file exists on disk
     if not file.file_path or not os.path.exists(file.file_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
-    
+
     # Return file for download
     from fastapi.responses import FileResponse as FastAPIFileResponse
-    
+
     return FastAPIFileResponse(
         path=file.file_path,
         filename=file.original_filename,
         media_type=file.file_type
-    ) 
+    )

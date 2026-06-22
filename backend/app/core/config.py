@@ -1,24 +1,28 @@
-from pydantic_settings import BaseSettings
-from typing import List, Optional
+"""Application settings loaded from environment variables / .env."""
 import os
+from typing import List, Optional
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    """Typed application configuration with sensible local-first defaults."""
+
     # Application settings
     APP_NAME: str = "KPI Extraction Platform"
     VERSION: str = "1.0.0"
     DEBUG: bool = False
-    
+
     # Database settings
     DATABASE_URL: str = "postgresql://kpi_user:kpi_password@localhost:5432/kpi_platform"
-    
+
     # Security settings
     SECRET_KEY: str = "your-secret-key-change-in-production"
     JWT_SECRET: str = "your-jwt-secret-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    
+
     # LLM settings — local-first via an OpenAI-compatible server (Ollama/vLLM/LM Studio).
     # No API key required for local models; LLM_API_KEY is any non-empty placeholder.
     # Point LLM_BASE_URL at a hosted OpenAI endpoint instead to use cloud models.
@@ -59,7 +63,7 @@ class Settings(BaseSettings):
     # leave it off to keep extraction fully deterministic/offline.
     ENABLE_VLM: bool = False
     VLM_MAX_PAGES: int = 10          # cap pages sent to the VLM per document
-    
+
     # CORS settings
     ALLOWED_HOSTS: List[str] = [
         "http://localhost:3000",
@@ -67,23 +71,26 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001"
     ]
-    
+
     # Redis settings
     REDIS_URL: str = "redis://localhost:6379"
-    
+
     # Vector database settings
-    VECTOR_DIMENSION: int = 768  # nomic-embed-text dimension (must match init.sql + LLM_EMBEDDING_MODEL)
-    
+    # Must match LLM_EMBEDDING_MODEL and the vector() dimension in init.sql.
+    VECTOR_DIMENSION: int = 768  # nomic-embed-text dimension
+
     # Pagination settings
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
-    
+
     # AI processing settings
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     MAX_TOKENS: int = 4000
-    
+
     class Config:
+        """Pydantic settings configuration."""
+
         env_file = ".env"
         case_sensitive = True
 
@@ -92,4 +99,4 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Ensure upload directory exists
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True) 
+os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

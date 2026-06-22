@@ -1,7 +1,7 @@
 """Common structured-table data model shared by every extraction backend."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # A cell can be text, a number, or empty (None).
@@ -29,14 +29,17 @@ class ExtractedTable:
 
     @property
     def n_rows(self) -> int:
+        """Number of rows in the grid, including the header row."""
         return len(self.rows)
 
     @property
     def n_cols(self) -> int:
+        """Width of the widest row in the grid."""
         return max((len(r) for r in self.rows), default=0)
 
     @property
     def header(self) -> Row:
+        """The first row, treated as the table header (empty list if no rows)."""
         return self.rows[0] if self.rows else []
 
     def is_meaningful(self) -> bool:

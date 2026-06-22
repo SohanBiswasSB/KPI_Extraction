@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.file import UploadedFile, FileStatus, ExtractedKPI, ExtractedTable
+from app.models.file import UploadedFile, FileStatus, ExtractedTable
 from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
 from app.services.table_extraction import extract_tables, export_tables, SUPPORTED_EXTENSIONS
@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 
 class FileService:
+    """Saves uploads, runs the table-extraction pipeline, and serves results."""
+
     def __init__(self):
         self.ai_service = AIService()
         self.embedding_service = EmbeddingService()
@@ -64,7 +66,7 @@ class FileService:
                 content = await file.read()
                 await f.write(content)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}")
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}") from exc
 
         record = UploadedFile(
             filename=unique_filename,
@@ -125,7 +127,12 @@ class FileService:
                 "kpis_extracted": kpi_count,
             }
             await db.commit()
-            return {"file_id": file_id, "status": "completed", "tables": len(tables), "kpis": kpi_count}
+            return {
+                "file_id": file_id,
+                "status": "completed",
+                "tables": len(tables),
+                "kpis": kpi_count,
+            }
 
         except Exception as exc:
             await db.rollback()
@@ -133,7 +140,7 @@ class FileService:
             record.status = FileStatus.FAILED
             record.processing_metadata = {**(record.processing_metadata or {}), "error": str(exc)}
             await db.commit()
-            raise HTTPException(status_code=500, detail=f"File processing failed: {exc}")
+            raise HTTPException(status_code=500, detail=f"File processing failed: {exc}") from exc
 
     async def _extract_and_store_tables(
         self, record: UploadedFile, db: AsyncSession
@@ -171,6 +178,7 @@ class FileService:
     # Reads / helpers
     # ------------------------------------------------------------------ #
     async def get_tables(self, file_id: int, db: AsyncSession) -> List[ExtractedTable]:
+        """Return a file's stored tables ordered by page then table index."""
         await self._get_file(file_id, db)
         result = await db.execute(
             select(ExtractedTable)
@@ -230,6 +238,7 @@ class FileService:
         return record
 
     async def delete_file(self, file_id: int, db: AsyncSession) -> bool:
+        """Delete a file's DB record (cascades to tables/KPIs) and its file on disk."""
         record = await self._get_file(file_id, db)
         if record.file_path and os.path.exists(record.file_path):
             os.remove(record.file_path)

@@ -6,7 +6,7 @@ this preserves real row/column structure as `ExtractedTable` grids.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import List
 
 import pandas as pd
 
@@ -38,6 +38,7 @@ def extract_excel(path: str) -> List[ExtractedTable]:
 
 
 def extract_csv(path: str) -> List[ExtractedTable]:
+    """Extract a CSV file as a single structured table."""
     df = pd.read_csv(path)
     if df.empty:
         return []
