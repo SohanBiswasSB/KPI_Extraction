@@ -25,6 +25,9 @@ from app.services.embedding_service import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
+# Tokens consumed by the KPI instruction block that wraps every window.
+PROMPT_OVERHEAD_TOKENS = 800
+
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
 
@@ -69,10 +72,14 @@ def _detect_context_chars(base_url: str, model: str, reply_tokens: int) -> Optio
             ctx = entry.get("loaded_context_length")
             if not ctx:
                 return None
-            # Leave room for the reply and prompt scaffolding, then convert
-            # tokens -> chars at a deliberately conservative 3 chars/token.
-            usable = max(int(ctx) - reply_tokens - 512, 512)
-            return usable * 3
+            # Convert the remaining token budget into characters.
+            # 3 chars/token holds for prose but NOT for financial tables:
+            # dense digits, commas and tabs measured ~2.05 chars/token on a
+            # 10-K, which overflowed every window. 1.8 leaves real headroom.
+            # PROMPT_OVERHEAD covers the instruction block wrapped around each
+            # window; without it the reservation is short by ~600 tokens.
+            usable = max(int(ctx) - reply_tokens - PROMPT_OVERHEAD_TOKENS, 512)
+            return int(usable * 1.8)
     return None
 
 
@@ -292,7 +299,12 @@ class AIService:
         self.kpi_patterns = {
             "financial": [
                 "revenue", "profit", "margin", "cost", "expense", "income", "earnings",
-                "cash flow", "roi", "roa", "roce", "ebitda", "ebit", "net income"
+                "cash flow", "roi", "roa", "roce", "ebitda", "ebit", "net income",
+                # Statement line items a 10-K/10-Q actually uses. Without these,
+                # "Total net sales" and "Total assets" were classified as "other".
+                "sales", "assets", "liabilities", "equity", "cash", "debt",
+                "dividend", "tax", "per share", "obligation", "inventory",
+                "receivable", "payable", "capital", "investment", "securities",
             ],
             "operational": [
                 "efficiency", "productivity", "throughput", "capacity", "utilization",

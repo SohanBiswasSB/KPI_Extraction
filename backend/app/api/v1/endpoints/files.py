@@ -21,9 +21,10 @@ from app.models.file import (
     TablePreviewResponse, FileUploadResponse,
     DocumentSearchQuery, DocumentSearchResult,
 )
-from app.models.kpi import KPI
+from app.models.kpi import KPI, KPICategory
 from app.models.user import User
 from app.services.file_service import FileService
+from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
 from app.core.config import settings
 
@@ -238,6 +239,21 @@ class AskResponse(BaseModel):
     retrieval: str = "hybrid (vector + keyword, RRF-fused)"
 
 
+def _infer_category(name: str) -> KPICategory:
+    """Bucket a KPI by name using the extraction service's keyword lists.
+
+    Everything previously landed in `other` because nothing ever set this.
+    """
+    low = name.lower()
+    for category, terms in AIService().kpi_patterns.items():
+        if any(term in low for term in terms):
+            try:
+                return KPICategory(category)
+            except ValueError:
+                break
+    return KPICategory.OTHER
+
+
 def _rerank(question: str, candidates: List[dict], top_k: int) -> List[dict]:
     """Reorder retrieved chunks by relevance using the configured LLM.
 
@@ -355,8 +371,19 @@ async def ask_documents(
                  "headers are often separated from their figures - if a "
                  "period or unit is not shown, say it is not stated rather "
                  "than inferring it.\n"
-                 "- Quote numbers exactly as they appear. Never rescale, "
-                 "convert or compute new figures.\n"
+                 "- Quote numbers exactly as they appear. Do NOT invent, "
+                 "rescale or convert figures.\n"
+                 "- Arithmetic is allowed ONLY when the question asks for it "
+                 "(total, sum, combined, average, difference, growth). When it "
+                 "does: list each component on its own line with its value and "
+                 "citation, then show the arithmetic, then the result, and "
+                 "label the result as computed. Example:\n"
+                 "    2023: $96,995M [Source: f.pdf, Page 39]\n"
+                 "    2024: $93,736M [Source: f.pdf, Page 39]\n"
+                 "    Total (computed): 96,995 + 93,736 = $190,731M\n"
+                 "- If the question asks for figures per period, per year or "
+                 "'respectively', list them separately and do NOT sum them.\n"
+                 "- Never compute a figure the question did not ask for.\n"
                  "- If the question assumes something the documents do not "
                  "cover (for example a quarter when only annual figures are "
                  "present), say so before answering.\n"
@@ -475,12 +502,17 @@ async def promote_extracted_kpis(
     for row in extracted:
         name = (row.kpi_name or "").strip()
         conf = float(row.confidence_score or 0)
-        if not name or name in taken or conf < min_confidence:
+        # A KPI without a number is not a metric. The model also returns
+        # narrative items ("Potential for stock price volatility"); those
+        # belong in the staging table, never in the curated list.
+        if (not name or name in taken or conf < min_confidence
+                or row.kpi_value is None):
             skipped += 1
             continue
         db.add(KPI(
             name=name[:255],
             description=f"Extracted from {file.original_filename}",
+            category=_infer_category(name),
             unit=(row.kpi_unit or None),
             current_value=row.kpi_value,
             organization_id=file.organization_id,
@@ -493,7 +525,7 @@ async def promote_extracted_kpis(
     return PromoteResponse(
         promoted=promoted, skipped=skipped,
         message=f"Promoted {promoted} KPI(s); skipped {skipped} "
-                f"(duplicate, unnamed, or below confidence {min_confidence}).",
+                f"(no numeric value, duplicate, unnamed, or below confidence {min_confidence}).",
     )
 
 

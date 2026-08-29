@@ -59,6 +59,7 @@ main{padding:22px 26px;min-width:0;overflow-x:auto}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:16px;margin-bottom:16px}
 .card h3{margin:0 0 12px;font-size:14px;display:flex;align-items:center;gap:8px}
+.card h3 button{margin-left:auto}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;
   margin-bottom:16px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
@@ -135,6 +136,51 @@ pre{background:var(--chip);padding:11px;border-radius:8px;overflow-x:auto;font-s
 .act{display:flex;align-items:center;gap:10px;background:var(--panel);
   border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;
   padding:11px 14px;margin-bottom:14px;font-size:13px}
+
+/* chat: conversation on the left, sources for the selected answer on the right */
+.chatwrap{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:16px;
+  height:calc(100vh - 230px);min-height:440px}
+@media (max-width:1100px){.chatwrap{grid-template-columns:1fr;height:auto}}
+.chat{display:flex;flex-direction:column;min-width:0}
+.thread{flex:1;overflow-y:auto;padding:4px 2px 12px;display:flex;
+  flex-direction:column;gap:14px}
+.msg{display:flex;gap:10px;max-width:min(760px,94%)}
+.msg.me{align-self:flex-end;flex-direction:row-reverse}
+.avatar{width:26px;height:26px;border-radius:50%;flex:none;display:grid;
+  place-items:center;font-size:11px;font-weight:650;background:var(--chip);
+  color:var(--muted)}
+.msg.me .avatar{background:var(--accent);color:var(--accent-ink)}
+.bubble{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:11px 14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.msg.me .bubble{background:var(--accent);color:var(--accent-ink);
+  border-color:transparent}
+.msg.bot .bubble{cursor:pointer}
+.msg.bot.sel .bubble{border-color:var(--accent);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.meta{font-size:11px;color:var(--muted);margin-top:6px}
+.msg.me .meta{text-align:right}
+.composer{border-top:1px solid var(--line);padding-top:12px;display:flex;gap:9px;
+  align-items:flex-end}
+.composer textarea{resize:none;min-height:44px;max-height:180px}
+.typing span{display:inline-block;width:6px;height:6px;margin-right:3px;
+  border-radius:50%;background:var(--muted);animation:blink 1.2s infinite}
+.typing span:nth-child(2){animation-delay:.2s}
+.typing span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,60%,100%{opacity:.25}30%{opacity:1}}
+
+/* sources panel */
+.srcpane{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.srcpane h4{margin:0;padding:13px 15px;border-bottom:1px solid var(--line);
+  font-size:13px;display:flex;align-items:center;gap:8px}
+.srclist{overflow-y:auto;padding:12px 15px;flex:1}
+.srcitem{border:1px solid var(--line);border-radius:9px;padding:10px;
+  margin-bottom:10px}
+.srcitem .top{font-size:11px;color:var(--muted);margin-bottom:6px;
+  display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.srcitem pre{max-height:200px;overflow:auto;font-size:11px}
+.srcq{font-size:12px;color:var(--muted);padding:0 15px 10px;
+  border-bottom:1px solid var(--line)}
 kbd{background:var(--chip);border:1px solid var(--line);border-bottom-width:2px;
   border-radius:5px;padding:1px 5px;font-size:11px;font-family:inherit}
 </style>
@@ -296,6 +342,24 @@ function orgPicker(){
 }
 function wireOrg(){ const s=$('#orgsel');
   if(s) s.onchange=()=>{ ORG=+s.value; localStorage.setItem('kpi_org',ORG); render(); }; }
+
+/* Ask history: questions and answers survive tab switches and reloads.
+   Kept per browser in localStorage; nothing leaves the machine. */
+const ASK_KEY='kpi_ask_history', ASK_MAX=50;
+function askHistory(){
+  try{ return JSON.parse(localStorage.getItem(ASK_KEY)||'[]'); }catch(e){ return []; }
+}
+function askSave(entry){
+  const h=askHistory(); h.unshift(entry);
+  try{ localStorage.setItem(ASK_KEY, JSON.stringify(h.slice(0,ASK_MAX))); }catch(e){}
+}
+function askClear(){ try{ localStorage.removeItem(ASK_KEY); }catch(e){} }
+function askDelete(ts){
+  try{
+    localStorage.setItem(ASK_KEY,
+      JSON.stringify(askHistory().filter(x=>x.ts!==ts)));
+  }catch(e){}
+}
 
 /* remember previous values so changes can be highlighted */
 let PREV={};
@@ -619,60 +683,164 @@ function renderTables(list){
 }
 
 /* ---------- ask (RAG) ---------- */
+function bubbleUser(text, ts){
+  return '<div class="msg me"><div class="avatar">You</div><div>'+
+    '<div class="bubble">'+esc(text)+'</div>'+
+    '<div class="meta">'+fmt(ts)+'</div></div></div>';
+}
+function bubbleBot(entry){
+  const n=(entry.sources||[]).length;
+  return '<div class="msg bot" data-ts="'+entry.ts+'"><div class="avatar">AI</div>'+
+    '<div><div class="bubble">'+esc(entry.answer)+'</div>'+
+    '<div class="meta">'+fmt(entry.ts)+
+      (n?' | '+n+' source'+(n>1?'s':'')+' - click to view':'')+
+    '</div></div></div>';
+}
+function bubbleTyping(){
+  return '<div class="msg bot" id="typing"><div class="avatar">AI</div>'+
+    '<div class="bubble typing"><span></span><span></span><span></span>'+
+    ' <span id="tel" style="font-size:12px;color:var(--muted)"></span></div></div>';
+}
+
+/* right-hand pane: the sources behind whichever answer is selected */
+let SEL_TS=null;
+function paintSources(){
+  const pane=$('#srclist'), qline=$('#srcq'); if(!pane) return;
+  const item=askHistory().find(x=>x.ts===SEL_TS) || askHistory()[0];
+  if(!item){
+    if(qline) qline.textContent='';
+    pane.innerHTML='<div class="es" style="padding:22px 8px">'+
+      'Sources appear here once you ask something.</div>';
+    $('#srccount').textContent='';
+    return;
+  }
+  if(qline) qline.textContent='for: '+item.q;
+  const srcs=item.sources||[];
+  $('#srccount').textContent=srcs.length||'';
+  pane.innerHTML = srcs.length ? srcs.map((x,i)=>
+    '<div class="srcitem"><div class="top">'+
+      '<span class="chip">'+(i+1)+'</span><b>'+esc(x.filename)+'</b>'+
+      (x.page?'<span>Page '+x.page+'</span>':'')+
+      (x.score!=null?'<span>similarity '+x.score.toFixed(3)+'</span>':'')+
+    '</div><pre>'+esc(x.text)+'</pre></div>').join('')
+    : '<div class="es" style="padding:22px 8px">No sources for this answer.</div>';
+  document.querySelectorAll('.msg.bot').forEach(m=>
+    m.classList.toggle('sel', +m.dataset.ts===item.ts));
+}
+function paintThread(){
+  const el=$('#thread'); if(!el) return;
+  const h=askHistory().slice().reverse();
+  el.innerHTML = h.length
+    ? h.map(x=>bubbleUser(x.q,x.ts)+bubbleBot(x)).join('')
+    : '<div class="es"><div class="big">Ask your documents</div>'+
+      'Answers come only from what you uploaded, and every figure is cited. '+
+      'Try <b>What was total net sales in 2025?</b></div>';
+  el.scrollTop = el.scrollHeight;
+  if(SEL_TS===null && h.length) SEL_TS=h[h.length-1].ts;
+  paintSources();
+}
+
+/* ---------- ask (chat) ---------- */
 async function vAsk(){
   $('#view').innerHTML=head('Ask',
-    'Question your uploaded documents. Answers cite the chunks they came from.');
+    'Chat with your documents. Sources for the selected answer are on the right.');
   wireHead();
-  $('#body').innerHTML=orgPicker()+
-    '<div class="card"><label class="f">Question</label>'+
-    '<textarea id="q" rows="3" placeholder="e.g. What was revenue in Q3?"></textarea>'+
-    '<div class="row" style="margin-top:11px">'+
-      '<div style="flex:0 0 120px"><label class="f">Chunks</label>'+
+  $('#body').innerHTML=
+    '<div class="row" style="margin-bottom:10px;align-items:center">'+
+      (ORGS.length>1?'<div style="flex:0 0 240px"><label class="f">Organization'+
+        '</label><select id="orgsel">'+ORGS.map(o=>'<option value="'+o.id+'"'+
+        (o.id===ORG?' selected':'')+'>'+esc(o.name)+'</option>').join('')+
+        '</select></div>':'')+
+      '<div style="flex:0 0 110px"><label class="f">Chunks</label>'+
         '<input id="tk" type="number" value="5" min="1" max="20"></div>'+
-      '<div style="flex:0"><button class="p" id="ab">Ask</button></div>'+
-      '<div style="color:var(--muted);font-size:12px;align-self:center">'+
-        '<kbd>Cmd</kbd>+<kbd>Enter</kbd> to ask</div>'+
-    '</div><div id="aprog"></div></div><div id="ans"></div>';
+      '<div id="corpus" style="align-self:center"></div>'+
+      '<div style="margin-left:auto;align-self:center">'+
+        '<button id="chatClear" style="padding:5px 10px;font-size:12px">'+
+        'Clear chat</button></div>'+
+    '</div>'+
+    '<div class="chatwrap">'+
+      '<div class="chat"><div class="thread" id="thread"></div>'+
+        '<div class="composer">'+
+          '<textarea id="q" rows="1" placeholder="Ask about your documents...">'+
+          '</textarea>'+
+          '<button class="p" id="ab" style="height:44px">Send</button>'+
+        '</div>'+
+        '<div style="color:var(--muted);font-size:11px;margin-top:6px">'+
+          '<kbd>Enter</kbd> to send, <kbd>Shift</kbd>+<kbd>Enter</kbd> newline'+
+        '</div>'+
+      '</div>'+
+      '<div class="srcpane"><h4>Sources '+
+        '<span class="chip" id="srccount"></span></h4>'+
+        '<div class="srcq" id="srcq"></div>'+
+        '<div class="srclist" id="srclist"></div></div>'+
+    '</div>';
   wireOrg();
-  // Ask is user-driven: no polling, but keep the corpus count fresh.
+  paintThread();
+
   CURRENT=async()=>{
     const files=await api('/files/?limit=500&organization_id='+ORG);
     const done=files.filter(f=>f.status==='completed').length;
-    const n=$('#corpus'); const html='<span class="chip'+(done?' live':'')+'">'+
-      done+' document(s) indexed</span>';
-    if(n) n.innerHTML=html;
-    else $('#body').insertAdjacentHTML('afterbegin',
-      '<div id="corpus" style="margin-bottom:12px">'+html+'</div>');
+    const n=$('#corpus');
+    if(n) n.innerHTML='<span class="chip'+(done?' live':'')+'">'+done+
+      ' document(s) indexed</span>';
   };
   await refreshNow(false); startTick();
 
+  $('#chatClear').onclick=()=>{
+    if(!confirm('Clear the whole conversation?')) return;
+    askClear(); SEL_TS=null; paintThread();
+  };
+  $('#thread').onclick=e=>{
+    const m=e.target.closest('.msg.bot'); if(!m||!m.dataset.ts) return;
+    SEL_TS=+m.dataset.ts; paintSources();
+  };
+
+  const ta=$('#q');
+  ta.addEventListener('input',()=>{
+    ta.style.height='auto'; ta.style.height=Math.min(ta.scrollHeight,180)+'px';
+  });
+
   const go=async()=>{
-    const q=$('#q').value.trim(); if(!q) return toast('Type a question','err');
+    const q=ta.value.trim(); if(!q) return;
+    const thread=$('#thread');
+    if(!askHistory().length) thread.innerHTML='';
+    ta.value=''; ta.style.height='auto';
     $('#ab').disabled=true;
-    $('#aprog').innerHTML='<div class="bar" style="margin-top:10px"><i></i></div>'+
-      '<div id="ael" style="font-size:12px;color:var(--muted);margin-top:6px"></div>';
-    const stop=elapsed($('#ael'),'Retrieving + asking the model -');
-    $('#ans').innerHTML='';
+    thread.insertAdjacentHTML('beforeend', bubbleUser(q, Date.now()));
+    thread.insertAdjacentHTML('beforeend', bubbleTyping());
+    thread.scrollTop=thread.scrollHeight;
+    const stop=elapsed($('#tel'),'');
     try{
       const r=await api('/files/ask',{method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({question:q,organization_id:ORG,top_k:+$('#tk').value})});
-      $('#ans').innerHTML='<div class="card"><h3>Answer</h3>'+
-        '<div style="white-space:pre-wrap;line-height:1.65">'+esc(r.answer)+'</div></div>'+
-        '<div class="card"><h3>Sources <span class="chip">'+r.sources.length+
-        '</span></h3>'+
-        (r.sources.length?r.sources.map(s=>
-          '<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--muted);'+
-          'margin-bottom:5px">'+esc(s.filename)+' | similarity '+
-          s.similarity_score.toFixed(3)+'</div><pre>'+esc(s.content_chunk.slice(0,700))+
-          '</pre></div>').join(''):'<div class="empty">No sources.</div>')+'</div>';
-    }catch(e){ $('#ans').innerHTML='<div class="card"><div class="empty">'+
-      esc(e.message)+'</div></div>'; }
-    finally{ stop(); $('#aprog').innerHTML=''; $('#ab').disabled=false; }
+      const entry={ ts:Date.now(), q:q, answer:r.answer,
+        sources:(r.sources||[]).map(x=>({
+          filename:x.filename,
+          page:(x.chunk_metadata||{}).page_number||null,
+          score:x.similarity_score,
+          text:(x.content_chunk||'').slice(0,1600),
+        })) };
+      askSave(entry);
+      stop(); const t=$('#typing'); if(t) t.remove();
+      thread.insertAdjacentHTML('beforeend', bubbleBot(entry));
+      SEL_TS=entry.ts; paintSources();
+    }catch(e){
+      stop(); const t=$('#typing'); if(t) t.remove();
+      thread.insertAdjacentHTML('beforeend',
+        '<div class="msg bot"><div class="avatar">AI</div><div class="bubble" '+
+        'style="border-color:var(--err);color:var(--err)">'+esc(e.message)+
+        '</div></div>');
+    }
+    finally{
+      $('#ab').disabled=false; thread.scrollTop=thread.scrollHeight; ta.focus();
+    }
   };
   $('#ab').onclick=go;
-  $('#q').addEventListener('keydown',e=>{
-    if((e.metaKey||e.ctrlKey)&&e.key==='Enter') go(); });
+  ta.addEventListener('keydown',e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); go(); }
+  });
+  ta.focus();
 }
 
 /* ---------- kpis ---------- */
