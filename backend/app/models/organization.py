@@ -38,7 +38,7 @@ class UserOrganization(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     # The DB column is the user_role ENUM (see init.sql), so this must be an
-    # Enum column too — a plain String sends VARCHAR and Postgres rejects it.
+    # Enum column too - a plain String sends VARCHAR and Postgres rejects it.
     role = Column(
         Enum(UserRole, name="user_role",
              values_callable=lambda e: [m.value for m in e]),

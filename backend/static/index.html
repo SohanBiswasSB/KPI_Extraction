@@ -169,7 +169,7 @@ let TOK=localStorage.getItem('kpi_tok')||'';
 let ME=null, ORG=+(localStorage.getItem('kpi_org')||1), ORGS=[];
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt=d=>d?new Date(d).toLocaleString():'—';
+const fmt=d=>d?new Date(d).toLocaleString():'-';
 
 /* ---------- live refresh engine ---------- */
 let TICK=null, LAST=0, AUTO=localStorage.getItem('kpi_auto')!=='0';
@@ -196,7 +196,7 @@ async function refreshNow(silent){
 }
 function paintAge(){
   const el=$('#age'); if(!el) return;
-  if(!LAST){ el.textContent='—'; return; }
+  if(!LAST){ el.textContent='-'; return; }
   const s=Math.round((Date.now()-LAST)/1000);
   el.textContent = s<2?'just now':`${s}s ago`;
   const d=$('#dot'); if(d) d.className='dot'+(AUTO?'':' off');
@@ -209,7 +209,7 @@ function head(title, sub){
   return `<div class="head"><div><h2>${esc(title)}</h2><p class="sub">${sub||''}</p></div>
     <div class="livebar">
       <span id="dot" class="dot${AUTO?'':' off'}"></span>
-      <span>updated <b id="age">—</b></span>
+      <span>updated <b id="age">-</b></span>
       <button id="refreshBtn">Refresh</button>
       <button id="autoBtn">${AUTO?'Auto: on':'Auto: off'}</button>
     </div></div><div id="body"></div>`;
@@ -232,7 +232,7 @@ async function api(path,opts={}){
   const o={...opts,headers:{...(opts.headers||{})}};
   if(TOK) o.headers.Authorization='Bearer '+TOK;
   const r=await fetch(API+path,o);
-  if(r.status===401){ logout(); throw new Error('Session expired — sign in again'); }
+  if(r.status===401){ logout(); throw new Error('Session expired - sign in again'); }
   const ct=r.headers.get('content-type')||'';
   const body=ct.includes('json')?await r.json().catch(()=>null):await r.text();
   if(!r.ok){
@@ -300,8 +300,8 @@ function wireOrg(){ const s=$('#orgsel');
 let PREV={};
 /* id -> display-name maps so file rows can show who uploaded and for which org */
 let USERMAP={}, ORGMAP={};
-function nameOfUser(id){ return USERMAP[id] || (id?('user #'+id):'—'); }
-function nameOfOrg(id){ return ORGMAP[id] || (id?('org #'+id):'—'); }
+function nameOfUser(id){ return USERMAP[id] || (id?('user #'+id):'-'); }
+function nameOfOrg(id){ return ORGMAP[id] || (id?('org #'+id):'-'); }
 async function loadLookups(){
   try{
     const [us,os]=await Promise.all([
@@ -322,7 +322,7 @@ function tile(key,n,l){
 
 /* ---------- overview ---------- */
 async function vOverview(){
-  $('#view').innerHTML=head('Overview','KPI Extraction Platform — local instance');
+  $('#view').innerHTML=head('Overview','KPI Extraction Platform - local instance');
   wireHead();
   CURRENT=async()=>{
     const [files,kpis,users]=await Promise.all([
@@ -368,8 +368,8 @@ function stepper(meta){
     const done = at>pos || cur==='done';
     const now  = !done && (cur===key || (key==='extracting_tables'&&at<0));
     return '<div class="step'+(done?' done':now?' now':'')+'">'+
-      '<span class="ic">'+(done?'✓':'')+'</span>'+esc(label)+'</div>'+
-      (i<STAGES.length-1?'<span class="step arrow">→</span>':'');
+      '<span class="ic">'+(done?'OK':'')+'</span>'+esc(label)+'</div>'+
+      (i<STAGES.length-1?'<span class="step arrow">-&gt;</span>':'');
   }).join('')+'</div>';
 }
 let SEEN=new Set();
@@ -388,17 +388,17 @@ function filesTable(list,acts){
       return '<tr'+(isNew?' class="fresh"':'')+'><td>'+f.id+'</td><td>'+
       esc(f.original_filename||f.filename)+'</td><td>'+
       esc((f.file_type||'').split('/').pop())+'</td><td>'+
-      (f.file_size?(f.file_size/1024).toFixed(0)+' KB':'—')+'</td><td>'+
+      (f.file_size?(f.file_size/1024).toFixed(0)+' KB':'-')+'</td><td>'+
       '<span class="chip">'+esc(nameOfOrg(f.organization_id))+'</span></td><td>'+
       esc(nameOfUser(f.uploaded_by))+'</td><td>'+
-      statusChip(f)+'</td><td>'+(m.tables_extracted??'—')+'</td><td>'+
-      (m.kpis_extracted??'—')+'</td><td>'+(m.embeddings_created??'—')+
+      statusChip(f)+'</td><td>'+(m.tables_extracted??'-')+'</td><td>'+
+      (m.kpis_extracted??'-')+'</td><td>'+(m.embeddings_created??'-')+
       '</td><td>'+fmt(f.created_at)+'</td>'+
       (A?'<td class="acts">'+
         '<button data-t="'+f.id+'"'+(busy?' disabled':'')+'>Tables</button>'+
         '<button data-x="'+f.id+'"'+(busy?' disabled':'')+'>Extract KPIs</button>'+
         '<button data-k="'+f.id+'"'+(busy?' disabled':'')+'>KPIs</button>'+
-        '<button data-pr="'+f.id+'"'+(busy?' disabled':'')+'>→ Curated</button>'+
+        '<button data-pr="'+f.id+'"'+(busy?' disabled':'')+'>-&gt; Curated</button>'+
         '<button class="d" data-del="'+f.id+'">Delete</button>'+
       '</td>':'')+'</tr>';
     }).join('')+'</tbody></table></div>'+
@@ -424,7 +424,7 @@ async function vFiles(){
     '<div class="row">'+
       '<div style="flex:2"><label class="f">Document</label>'+
         '<div class="drop" id="drop"><b>Drop a file here</b> or click to browse<br>'+
-        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image · max 50 MB</span></div>'+
+        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image | max 50 MB</span></div>'+
         '<input type="file" id="uf" class="hide" '+
         'accept=".pdf,.xlsx,.xls,.docx,.csv,.png,.jpg,.jpeg"></div>'+
       '<div><label class="f">Description</label><input id="ud" placeholder="optional"></div>'+
@@ -450,9 +450,9 @@ function wireDrop(){
     const f=inp.files[0];
     z.innerHTML = f
       ? '<span class="fname">'+esc(f.name)+'</span><br><span style="font-size:12px">'+
-        (f.size/1024).toFixed(0)+' KB · click to change</span>'
+        (f.size/1024).toFixed(0)+' KB | click to change</span>'
       : '<b>Drop a file here</b> or click to browse<br>'+
-        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image · max 50 MB</span>';
+        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image | max 50 MB</span>';
     btn.disabled=!f;
   };
   z.onclick=()=>inp.click();
@@ -487,8 +487,8 @@ async function upload(){
   $('#uprog').innerHTML='<div class="bar"><i></i></div><div id="uel" '+
     'style="font-size:12px;color:var(--muted);margin-top:6px"></div>'+
     '<div style="font-size:12px;color:var(--muted);margin-top:4px">'+
-    'Tables → KPIs → embeddings. Progress appears in the list below.</div>';
-  const stop=elapsed($('#uel'),'Uploading & processing —');
+    'Tables -&gt; KPIs -&gt; embeddings. Progress appears in the list below.</div>';
+  const stop=elapsed($('#uel'),'Uploading & processing -');
   FAST=true; startTick();
   try{
     const r=await api('/files/upload',{method:'POST',body:fd});
@@ -506,11 +506,11 @@ async function onFileAct(e){
   const b=e.target.closest('button'); if(!b) return;
   const d=$('#detail');
   if(b.dataset.t){
-    d.innerHTML='<div class="card"><h3><span class="spin"></span> Tables — file #'+
+    d.innerHTML='<div class="card"><h3><span class="spin"></span> Tables - file #'+
       b.dataset.t+'</h3><div class="bar"><i></i></div></div>';
     try{
       const t=await api('/files/'+b.dataset.t+'/tables');
-      d.innerHTML='<div class="card"><h3>Tables — file #'+b.dataset.t+
+      d.innerHTML='<div class="card"><h3>Tables - file #'+b.dataset.t+
         ' <span class="chip">'+t.length+'</span></h3>'+renderTables(t)+'</div>';
     }catch(err){ d.innerHTML='<div class="card"><div class="empty">'+
       esc(err.message)+'</div></div>'; }
@@ -519,7 +519,7 @@ async function onFileAct(e){
   if(b.dataset.x){
     b.disabled=true; const o=b.textContent;
     const stop=elapsed(b,'');
-    toast('Extracting KPIs — the local model can take 30-90s');
+    toast('Extracting KPIs - the local model can take 30-90s');
     try{
       const r=await api('/files/'+b.dataset.x+'/extract-kpis',{method:'POST'});
       toast('Done: '+r.tables_extracted+' tables, '+r.kpis_extracted+' KPIs','ok');
@@ -527,17 +527,17 @@ async function onFileAct(e){
     finally{ stop(); b.disabled=false; b.textContent=o; await refreshNow(false); }
   }
   if(b.dataset.k){
-    d.innerHTML='<div class="card"><h3><span class="spin"></span> Extracted KPIs — file #'+
+    d.innerHTML='<div class="card"><h3><span class="spin"></span> Extracted KPIs - file #'+
       b.dataset.k+'</h3><div class="bar"><i></i></div></div>';
     try{
       const k=await api('/files/'+b.dataset.k+'/extracted-kpis');
-      d.innerHTML='<div class="card"><h3>Extracted KPIs — file #'+b.dataset.k+
+      d.innerHTML='<div class="card"><h3>Extracted KPIs - file #'+b.dataset.k+
         ' <span class="chip">'+k.length+'</span></h3>'+
         (k.length?'<div class="tw"><table><thead><tr><th>Name</th><th>Value</th>'+
           '<th>Unit</th><th>Confidence</th><th>Method</th></tr></thead><tbody>'+
-          k.map(x=>'<tr><td>'+esc(x.kpi_name)+'</td><td>'+(x.kpi_value??'—')+
-          '</td><td>'+esc(x.kpi_unit||'—')+'</td><td>'+(x.confidence_score??'—')+
-          '</td><td><span class="chip">'+esc(x.extraction_method||'—')+
+          k.map(x=>'<tr><td>'+esc(x.kpi_name)+'</td><td>'+(x.kpi_value??'-')+
+          '</td><td>'+esc(x.kpi_unit||'-')+'</td><td>'+(x.confidence_score??'-')+
+          '</td><td><span class="chip">'+esc(x.extraction_method||'-')+
           '</span></td></tr>').join('')+'</tbody></table></div>':
         '<div class="es"><div class="big">Nothing extracted</div>'+
         'The model found no KPIs in this document, or it returned an empty '+
@@ -569,17 +569,17 @@ function renderTables(list){
   return list.slice(0,20).map(t=>{
     const rows=t.rows||[]; const head=rows[0]||[], body=rows.slice(1,26);
     return '<div style="margin-bottom:18px"><div style="color:var(--muted);'+
-      'font-size:12px;margin-bottom:7px">page '+t.page+' · table #'+t.table_index+
-      ' · '+t.n_rows+'×'+t.n_cols+
-      (t.sheet_name?' · sheet '+esc(t.sheet_name):'')+
-      (t.source?' · via '+esc(t.source):'')+'</div>'+
+      'font-size:12px;margin-bottom:7px">page '+t.page+' | table #'+t.table_index+
+      ' | '+t.n_rows+'x'+t.n_cols+
+      (t.sheet_name?' | sheet '+esc(t.sheet_name):'')+
+      (t.source?' | via '+esc(t.source):'')+'</div>'+
       '<div class="tw"><table><thead><tr>'+head.map(h=>'<th>'+esc(h)+'</th>').join('')+
       '</tr></thead><tbody>'+body.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+
       '</tr>').join('')+'</tbody></table></div>'+
       (rows.length>26?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+
-        '… '+(rows.length-26)+' more rows</div>':'')+'</div>';
+        '... '+(rows.length-26)+' more rows</div>':'')+'</div>';
   }).join('')+(list.length>20?'<div style="color:var(--muted);font-size:12px">'+
-    '… '+(list.length-20)+' more tables</div>':'');
+    '... '+(list.length-20)+' more tables</div>':'');
 }
 
 /* ---------- ask (RAG) ---------- */
@@ -615,7 +615,7 @@ async function vAsk(){
     $('#ab').disabled=true;
     $('#aprog').innerHTML='<div class="bar" style="margin-top:10px"><i></i></div>'+
       '<div id="ael" style="font-size:12px;color:var(--muted);margin-top:6px"></div>';
-    const stop=elapsed($('#ael'),'Retrieving + asking the model —');
+    const stop=elapsed($('#ael'),'Retrieving + asking the model -');
     $('#ans').innerHTML='';
     try{
       const r=await api('/files/ask',{method:'POST',
@@ -627,7 +627,7 @@ async function vAsk(){
         '</span></h3>'+
         (r.sources.length?r.sources.map(s=>
           '<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--muted);'+
-          'margin-bottom:5px">'+esc(s.filename)+' · similarity '+
+          'margin-bottom:5px">'+esc(s.filename)+' | similarity '+
           s.similarity_score.toFixed(3)+'</div><pre>'+esc(s.content_chunk.slice(0,700))+
           '</pre></div>').join(''):'<div class="empty">No sources.</div>')+'</div>';
     }catch(e){ $('#ans').innerHTML='<div class="card"><div class="empty">'+
@@ -652,13 +652,13 @@ async function vKpis(){
       '<th>Category</th><th>Current</th><th>Target</th><th>Unit</th><th>Created</th>'+
       '<th></th></tr></thead><tbody>'+k.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.name)+
       '</td><td><span class="chip">'+esc(x.category)+'</span></td><td>'+
-      (x.current_value??'—')+'</td><td>'+(x.target_value??'—')+'</td><td>'+
-      esc(x.unit||'—')+'</td><td>'+fmt(x.created_at)+'</td>'+
+      (x.current_value??'-')+'</td><td>'+(x.target_value??'-')+'</td><td>'+
+      esc(x.unit||'-')+'</td><td>'+fmt(x.created_at)+'</td>'+
       '<td class="acts"><button class="d" data-dk="'+x.id+'">Delete</button></td>'+
       '</tr>').join('')+'</tbody></table></div>':
       '<div class="es"><div class="big">No curated KPIs yet</div>'+
       'Extraction writes to a per-file staging area. To bring those metrics '+
-      'here, open <b>Files</b> and hit <code>→ Curated</code> on a processed '+
+      'here, open <b>Files</b> and hit <code>-&gt; Curated</code> on a processed '+
       'file.</div>';
     $('#kl').onclick=async e=>{
       const b=e.target.closest('button[data-dk]'); if(!b) return;
@@ -682,7 +682,7 @@ async function vUsers(){
     $('#ul').innerHTML=u.length?'<div class="tw"><table><thead><tr><th>ID</th>'+
       '<th>Username</th><th>Email</th><th>Name</th><th>Role</th><th>Active</th>'+
       '<th>Created</th></tr></thead><tbody>'+u.map(x=>'<tr><td>'+x.id+'</td><td>'+
-      esc(x.username)+'</td><td>'+esc(x.email)+'</td><td>'+esc(x.full_name||'—')+
+      esc(x.username)+'</td><td>'+esc(x.email)+'</td><td>'+esc(x.full_name||'-')+
       '</td><td><span class="chip">'+esc(x.role)+'</span></td><td>'+
       (x.is_active?'<span class="chip ok">yes</span>':'<span class="chip err">no</span>')+
       '</td><td>'+fmt(x.created_at)+'</td></tr>').join('')+'</tbody></table></div>':
@@ -717,7 +717,7 @@ async function vOrgs(){
     const o=await api('/organizations/'); ORGS=o;
     $('#ol').innerHTML=o.length?'<div class="tw"><table><thead><tr><th>ID</th><th>Name</th>'+
       '<th>Description</th><th>Created</th></tr></thead><tbody>'+o.map(x=>'<tr><td>'+
-      x.id+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.description||'—')+'</td><td>'+
+      x.id+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.description||'-')+'</td><td>'+
       fmt(x.created_at)+'</td></tr>').join('')+'</tbody></table></div>':
       '<div class="empty">No organizations.</div>';
   };

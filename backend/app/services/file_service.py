@@ -140,7 +140,7 @@ class FileService:
                 for kpi in kpis:
                     db.add(kpi)
                 kpi_count = len(kpis)
-            except Exception as exc:  # AI is optional — never fail the pipeline on it
+            except Exception as exc:  # AI is optional - never fail the pipeline on it
                 logger.warning("KPI extraction skipped for file %s: %s", file_id, exc)
 
             # 3. Best-effort embeddings for semantic search.

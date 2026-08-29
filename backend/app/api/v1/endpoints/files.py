@@ -244,7 +244,7 @@ def _rerank(question: str, candidates: List[dict], top_k: int) -> List[dict]:
     A cross-encoder (BGE, Cohere) is the textbook choice, but that means either
     a cloud call or a second local model. Reusing the chat model as a judge
     costs one extra request and captures most of the benefit. On any failure
-    the original hybrid order is returned unchanged — reranking must never be
+    the original hybrid order is returned unchanged - reranking must never be
     able to break retrieval.
     """
     if len(candidates) <= top_k:
@@ -304,7 +304,7 @@ async def ask_documents(
     embedding_service = EmbeddingService()
     try:
         # Retrieve wider than we need, then rerank down. Hybrid search is good
-        # at surfacing candidates but poor at ordering them — the chunk that
+        # at surfacing candidates but poor at ordering them - the chunk that
         # answers the question is often not the one with the best cosine score.
         pool = max(body.top_k * 4, 12)
         candidates = await embedding_service.search_documents_hybrid(
@@ -352,7 +352,7 @@ async def ask_documents(
                  "stated in the provided documents.\" Do not guess.\n"
                  "- Never supply a year, quarter, fiscal period, currency, "
                  "scale or unit that is not written in the context. Column "
-                 "headers are often separated from their figures — if a "
+                 "headers are often separated from their figures - if a "
                  "period or unit is not shown, say it is not stated rather "
                  "than inferring it.\n"
                  "- Quote numbers exactly as they appear. Never rescale, "
@@ -390,7 +390,7 @@ async def search_documents(
 
     try:
         # Perform semantic search over document chunks.
-        # NOTE: call search_documents directly with keyword args — semantic_search()
+        # NOTE: call search_documents directly with keyword args - semantic_search()
         # takes (query, organization_id, search_type, limit, db) and returns a dict,
         # which does not match this route's List[DocumentSearchResult] response model.
         results = await embedding_service.search_documents(

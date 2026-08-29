@@ -60,7 +60,7 @@ def _detect_context_chars(base_url: str, model: str, reply_tokens: int) -> Optio
             endpoint = endpoint[:-3]
         with urllib.request.urlopen(endpoint + "/api/v0/models", timeout=3) as resp:
             data = json.loads(resp.read().decode())
-    except Exception:  # not LM Studio, or unreachable — caller falls back
+    except Exception:  # not LM Studio, or unreachable - caller falls back
         return None
 
     for entry in data.get("data", []):
@@ -245,7 +245,7 @@ class AIService:
     ) -> List[ExtractedKPI]:
         """Extract KPIs from text using AI, scanning the WHOLE document.
 
-        The previous implementation sent only ``text[:4000]`` — on a 314k-char
+        The previous implementation sent only ``text[:4000]`` - on a 314k-char
         10-K that is 1.3% of the document, and it happens to be the SEC cover
         page. The model saw no figures at all and answered from memory, so the
         stored "KPIs" were confident fabrications. This walks the document in
@@ -291,7 +291,7 @@ class AIService:
               convert, sum or compute anything. 7.46 stays 7.46, never 14.78.
             - Negative numbers are often shown in parentheses: (321) -> -321.
 
-            UNITS AND SCALE — read the table's own header before deciding:
+            UNITS AND SCALE - read the table's own header before deciding:
             - Statements usually declare a scale, e.g. "(In millions)" or
               "(In thousands)". That scale applies to the money rows in that
               table, so kpi_unit becomes "USD millions" / "USD thousands".
@@ -301,7 +301,7 @@ class AIService:
             - Per-share amounts are literal dollars, NOT scaled:
               kpi_unit = "USD per share".
             - Share/unit counts are not money: kpi_unit = "shares thousands"
-              (or "shares") — never "USD".
+              (or "shares") - never "USD".
             - Percentages: kpi_unit = "%" and strip the % sign from the value.
             - Ratios or plain counts with no unit: kpi_unit = null.
             - Never put a scale word inside kpi_value; it belongs in kpi_unit.
@@ -373,12 +373,12 @@ class AIService:
         extracted_kpis = []
 
         # Common KPI patterns with regex.
-        # Each entry is (pattern, name_group, value_group) — the groups are NOT in
+        # Each entry is (pattern, name_group, value_group) - the groups are NOT in
         # the same order for every pattern, so the indices must travel with the
         # pattern rather than being assumed to be (1, 2).
         # (pattern, name_group, value_group, require_known_term)
         patterns = [
-            # Key: Value — matches any label, so it must name a known metric,
+            # Key: Value - matches any label, so it must name a known metric,
             # otherwise every "September: 1" in the document becomes a KPI.
             (r'([A-Za-z][A-Za-z \-]{2,40})\s*[:=]\s*([\d,]+\.?\d*)', 1, 2, True),
             # Value + Unit + KPI type  -> name is group 3, value is group 1

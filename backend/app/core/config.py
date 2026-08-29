@@ -23,14 +23,14 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # LLM settings — local-first via an OpenAI-compatible server (LM Studio/Ollama/vLLM).
+    # LLM settings - local-first via an OpenAI-compatible server (LM Studio/Ollama/vLLM).
     # No API key required for local models; LLM_API_KEY is any non-empty placeholder.
     # Point LLM_BASE_URL at a hosted OpenAI endpoint instead to use cloud models.
     #
     # --- Ollama defaults (disabled; not in use) -------------------------------
     # LLM_BASE_URL: str = "http://localhost:11434/v1"  # Ollama default
-    # LLM_MODEL: str = "qwen2.5:7b-instruct"           # text → KPI structuring
-    # LLM_VISION_MODEL: str = "qwen2.5vl:7b"           # vision → tables from page images
+    # LLM_MODEL: str = "qwen2.5:7b-instruct"           # text -> KPI structuring
+    # LLM_VISION_MODEL: str = "qwen2.5vl:7b"           # vision -> tables from page images
     # LLM_EMBEDDING_MODEL: str = "nomic-embed-text"    # local embeddings (768-dim)
     # --------------------------------------------------------------------------
     #
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # and often return an empty message; prefilling an already-closed think block
     # makes them answer immediately (measured 59s/empty -> 7s/correct on
     # bonsai-27b). qwen2.5-7b-instruct is NOT a reasoning model, so this is
-    # disabled — set it to "<think>\n\n</think>\n\n" if you switch back.
+    # disabled - set it to "<think>\n\n</think>\n\n" if you switch back.
     LLM_THINK_PREFILL: str = ""
 
     # Back-compat: legacy code/env may still reference these.

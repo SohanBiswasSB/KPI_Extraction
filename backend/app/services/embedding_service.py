@@ -49,7 +49,7 @@ class EmbeddingService:
     _SPACE_RUN = re.compile(r"[ ]{3,}")
     # A SINGLE tab between letters is pdfplumber splitting one word; a column
     # boundary shows up as a run of two or more tabs. That distinction is what
-    # makes rejoining safe — "Total ne\tt sales" merges, "Products\t\t$" does not.
+    # makes rejoining safe - "Total ne\tt sales" merges, "Products\t\t$" does not.
     _SPLIT_WORD = re.compile(r"([A-Za-z])\t([A-Za-z]{1,8})(?=[\s\t]|$)")
     _BLANK_RUN = re.compile(r"\n{3,}")
 
@@ -279,8 +279,8 @@ class EmbeddingService:
     ) -> List[Dict[str, Any]]:
         """Retrieve chunks using BOTH vector similarity and keyword search.
 
-        Pure vector search misses exact tokens — identifiers, statement line
-        names, specific figures — because an embedding blurs them into meaning.
+        Pure vector search misses exact tokens - identifiers, statement line
+        names, specific figures - because an embedding blurs them into meaning.
         Pure keyword search misses paraphrase. Running both and fusing the two
         rankings with Reciprocal Rank Fusion keeps each one's strengths without
         having to tune a weight between two incomparable score scales.
@@ -374,7 +374,7 @@ class EmbeddingService:
 
         # Build search query.
         # NOTE: this runs through SQLAlchemy text(), so it uses :named bind params
-        # and a dict — not asyncpg's $1 positional style. The query vector is bound
+        # and a dict - not asyncpg's $1 positional style. The query vector is bound
         # as its pgvector literal form and cast, since it is not an ORM column here.
         vec = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
 
@@ -610,7 +610,7 @@ class EmbeddingService:
         """Search for KPIs similar to the query embedding using vector similarity."""
 
         # Build search query.
-        # NOTE: only columns that actually exist are selected — kpi_embeddings has
+        # NOTE: only columns that actually exist are selected - kpi_embeddings has
         # no `content`, and kpis has no frequency/calculation_method/data_source.
         # Binding follows SQLAlchemy text() rules (:named + dict), not asyncpg $N.
         vec = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
