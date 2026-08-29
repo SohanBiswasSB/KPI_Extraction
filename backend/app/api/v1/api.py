@@ -13,4 +13,3 @@ api_router.include_router(kpis.router, prefix="/kpis", tags=["kpis"])
 api_router.include_router(dashboards.router, prefix="/dashboards", tags=["dashboards"])
 api_router.include_router(files.router, prefix="/files", tags=["files"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
- 

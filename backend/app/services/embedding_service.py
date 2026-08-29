@@ -1,6 +1,7 @@
 """Embedding generation and vector-similarity search for documents and KPIs."""
 
 import logging
+import re
 from typing import List, Dict, Any, Optional
 
 import openai
@@ -8,7 +9,7 @@ from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.file import DocumentEmbedding
+from app.models.file import DocumentEmbedding, UploadedFile
 from app.models.kpi import KPIEmbedding, KPI
 
 logger = logging.getLogger(__name__)
@@ -40,10 +41,59 @@ class EmbeddingService:
             # Return zero vector as fallback
             return [0.0] * self.vector_dimension
 
+    # pdfplumber positions glyphs, not words: column gaps become runs of tabs
+    # and words get split mid-token ("Total ne\tt sales", "Sept\tember 27").
+    # Cleaning this before embedding removes noise the model would otherwise
+    # have to see through, and makes retrieved chunks readable in the UI.
+    _TAB_RUN = re.compile(r"\t{2,}")
+    _SPACE_RUN = re.compile(r"[ ]{3,}")
+    # A SINGLE tab between letters is pdfplumber splitting one word; a column
+    # boundary shows up as a run of two or more tabs. That distinction is what
+    # makes rejoining safe — "Total ne\tt sales" merges, "Products\t\t$" does not.
+    _SPLIT_WORD = re.compile(r"([A-Za-z])\t([A-Za-z]{1,8})(?=[\s\t]|$)")
+    _BLANK_RUN = re.compile(r"\n{3,}")
+
+    @classmethod
+    def clean_text(cls, text: str) -> str:
+        """Repair pdfplumber artefacts without destroying column structure."""
+        # Rejoin words broken by a single tab ("ne\tt sales" -> "net sales").
+        # Applied twice: some words are split more than once.
+        for _ in range(2):
+            text = cls._SPLIT_WORD.sub(r"\1\2", text)
+        text = cls._TAB_RUN.sub("\t", text)      # keep ONE tab as a column break
+        text = cls._SPACE_RUN.sub(" ", text)
+        text = cls._BLANK_RUN.sub("\n\n", text)
+        return text
+
     # Lines at the top of a table block that identify it: title, units
     # ("In millions"), "Years ended", and the column headers. These must ride
     # along with every chunk of that table.
     HEADER_LINES = 12
+
+    _MARKER = re.compile(
+        r"^\[page (?P<page>\d+) table (?P<table>\d+)(?: via (?P<source>[^\]]+))?\]"
+    )
+
+    @classmethod
+    def _block_meta(cls, block: str) -> Dict[str, Any]:
+        """Pull page / table / source out of a block's leading marker."""
+        m = cls._MARKER.match(block.strip())
+        if not m:
+            return {}
+        return {
+            "page_number": int(m.group("page")),
+            "table_index": int(m.group("table")),
+            "parser": (m.group("source") or "").strip() or None,
+        }
+
+    @staticmethod
+    def _heading_of(block: str) -> Optional[str]:
+        """Best-effort section heading: the first substantial text line."""
+        for line in block.split("\n")[1:8]:
+            candidate = re.sub(r"[\t ]+", " ", line).strip()
+            if len(candidate) >= 8 and not re.fullmatch(r"[\d\s.,()$%-]+", candidate):
+                return candidate[:120]
+        return None
 
     @staticmethod
     def _split_blocks(text: str) -> List[str]:
@@ -60,7 +110,62 @@ class EmbeddingService:
             blocks.append("\n".join(current))
         return [b for b in blocks if b.strip()]
 
-    async def chunk_text(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
+    async def chunk_document(
+        self, text: str, chunk_size: Optional[int] = None,
+        overlap: Optional[int] = None, source_file: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Chunk the document and carry per-chunk provenance alongside the text.
+
+        Every chunk records the page, table, parser and nearest heading it came
+        from, so retrieval can filter on them and the UI can tell the reader
+        which page of the PDF an answer is grounded in.
+        """
+        if chunk_size is None:
+            chunk_size = settings.CHUNK_SIZE
+        if overlap is None:
+            overlap = settings.CHUNK_OVERLAP
+
+        out: List[Dict[str, Any]] = []
+        for block in self._split_blocks(self.clean_text(text)):
+            meta = self._block_meta(block)
+            meta["heading"] = self._heading_of(block)
+            lines = block.split("\n")
+            header = "\n".join(lines[: self.HEADER_LINES]).strip()
+            body = "\n".join(lines[self.HEADER_LINES :])
+
+            pieces: List[str] = []
+            if not body.strip():
+                pieces.append(block[:chunk_size])
+            else:
+                budget = max(chunk_size - len(header) - 1, chunk_size // 2)
+                start = 0
+                while start < len(body):
+                    piece = body[start : start + budget]
+                    pieces.append(f"{header}\n{piece}" if header else piece)
+                    nxt = start + budget - overlap
+                    if nxt <= start:
+                        break
+                    start = nxt
+
+            # Contextual prefix: a chunk separated from its document loses the
+            # only clues about what it describes. Stating the source, page and
+            # section up front costs a few tokens and lets the model cite them.
+            bits = []
+            if source_file:
+                bits.append(f"Document: {source_file}")
+            if meta.get("page_number") is not None:
+                bits.append(f"Page {meta['page_number']}")
+            if meta.get("heading"):
+                bits.append(f"Section: {meta['heading']}")
+            prefix = f"[{' | '.join(bits)}]\n" if bits else ""
+
+            for piece in pieces:
+                if piece.strip():
+                    out.append({"text": prefix + piece, **meta})
+        return out
+
+    async def chunk_text(self, text: str, chunk_size: Optional[int] = None,
+                         overlap: Optional[int] = None) -> List[str]:
         """Split text into chunks, keeping each table's header with its rows.
 
         A plain character-window split orphans the header block (table title,
@@ -99,8 +204,19 @@ class EmbeddingService:
         self, file_id: int, text: str, db: AsyncSession
     ) -> List[DocumentEmbedding]:
         """Create embeddings for document chunks."""
-        # Split text into chunks
-        chunks = await self.chunk_text(text)
+        source_file = None
+        if db is not None:
+            try:
+                source_file = (await db.execute(
+                    select(UploadedFile.original_filename)
+                    .where(UploadedFile.id == file_id)
+                )).scalar_one_or_none()
+            except Exception:  # provenance is nice-to-have, never fatal
+                source_file = None
+
+        # Chunk with provenance so each row records its page / table / heading.
+        pieces = await self.chunk_document(text, source_file=source_file)
+        chunks = [p["text"] for p in pieces]
         embeddings = []
 
         # Embed in batches rather than one HTTP round-trip per chunk. A large
@@ -125,7 +241,12 @@ class EmbeddingService:
                 chunk_metadata={
                     "chunk_size": len(chunk),
                     "chunk_index": i,
-                    "total_chunks": len(chunks)
+                    "total_chunks": len(chunks),
+                    "source_file": source_file,
+                    "page_number": pieces[i].get("page_number"),
+                    "table_index": pieces[i].get("table_index"),
+                    "parser": pieces[i].get("parser"),
+                    "heading": pieces[i].get("heading"),
                 }
             )
             embeddings.append(doc_embedding)
@@ -145,6 +266,99 @@ class EmbeddingService:
 
         return kpi_embedding
 
+    async def search_documents_hybrid(
+        self,
+        query: str,
+        organization_id: int,
+        file_ids: Optional[List[int]] = None,
+        limit: int = 10,
+        similarity_threshold: float = 0.05,
+        db: Optional[AsyncSession] = None,
+        candidates: int = 30,
+        rrf_k: int = 60,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve chunks using BOTH vector similarity and keyword search.
+
+        Pure vector search misses exact tokens — identifiers, statement line
+        names, specific figures — because an embedding blurs them into meaning.
+        Pure keyword search misses paraphrase. Running both and fusing the two
+        rankings with Reciprocal Rank Fusion keeps each one's strengths without
+        having to tune a weight between two incomparable score scales.
+
+        RRF score for a chunk = sum over lists of 1 / (rrf_k + rank_in_list).
+        """
+        vector_hits = await self.search_documents(
+            query=query, organization_id=organization_id, file_ids=file_ids,
+            limit=candidates, similarity_threshold=similarity_threshold, db=db,
+        )
+        keyword_hits = await self.search_documents_keyword(
+            query=query, organization_id=organization_id, file_ids=file_ids,
+            limit=candidates, db=db,
+        )
+
+        fused: Dict[tuple, Dict[str, Any]] = {}
+        for source, hits in (("vector", vector_hits), ("keyword", keyword_hits)):
+            for rank, hit in enumerate(hits):
+                key = (hit["file_id"], hit.get("chunk_index"))
+                entry = fused.setdefault(key, {**hit, "rrf_score": 0.0,
+                                                "matched_by": []})
+                entry["rrf_score"] += 1.0 / (rrf_k + rank + 1)
+                entry["matched_by"].append(source)
+                # Keep the real cosine score when the vector list supplied it.
+                if source == "vector":
+                    entry["similarity_score"] = hit["similarity_score"]
+
+        ranked = sorted(fused.values(), key=lambda h: h["rrf_score"], reverse=True)
+        return ranked[:limit]
+
+    async def search_documents_keyword(
+        self,
+        query: str,
+        organization_id: int,
+        file_ids: Optional[List[int]] = None,
+        limit: int = 10,
+        db: Optional[AsyncSession] = None,
+    ) -> List[Dict[str, Any]]:
+        """Full-text (keyword) search over chunks, ranked by ts_rank."""
+        sql = """
+        SELECT
+            de.content_chunk,
+            de.file_id,
+            uf.original_filename,
+            de.chunk_index,
+            de.chunk_metadata,
+            ts_rank(to_tsvector('english', de.content_chunk),
+                    websearch_to_tsquery('english', :q)) AS rank
+        FROM document_embeddings de
+        JOIN uploaded_files uf ON de.file_id = uf.id
+        WHERE uf.organization_id = :org_id
+          AND to_tsvector('english', de.content_chunk)
+              @@ websearch_to_tsquery('english', :q)
+        """
+        params: Dict[str, Any] = {"q": query, "org_id": organization_id,
+                                  "limit": limit}
+        if file_ids:
+            sql += " AND de.file_id = ANY(:file_ids)"
+            params["file_ids"] = list(file_ids)
+        sql += " ORDER BY rank DESC LIMIT :limit"
+
+        try:
+            result = await db.execute(sql_text(sql), params)
+            rows = result.fetchall()
+        except Exception as err:  # a malformed query should not kill retrieval
+            logger.warning("Keyword search failed: %s", err)
+            return []
+
+        return [{
+            "content_chunk": row[0],
+            "file_id": row[1],
+            "filename": row[2],
+            "chunk_index": row[3],
+            "chunk_metadata": row[4],
+            "similarity_score": 0.0,
+            "keyword_rank": float(row[5]),
+        } for row in rows]
+
     async def search_documents(
         self,
         query: str,
@@ -152,7 +366,7 @@ class EmbeddingService:
         file_ids: Optional[List[int]] = None,
         limit: int = 10,
         similarity_threshold: float = 0.7,
-        db: AsyncSession = None
+        db: Optional[AsyncSession] = None
     ) -> List[Dict[str, Any]]:
         """Search documents using vector similarity."""
         # Generate embedding for query
@@ -218,7 +432,7 @@ class EmbeddingService:
         organization_id: int,
         limit: int = 10,
         similarity_threshold: float = 0.7,
-        db: AsyncSession = None
+        db: Optional[AsyncSession] = None
     ) -> List[Dict[str, Any]]:
         """Search KPIs using vector similarity."""
         # Generate embedding for query
@@ -281,7 +495,7 @@ class EmbeddingService:
         organization_id: int,
         search_type: str = "both",  # "documents", "kpis", "both"
         limit: int = 10,
-        db: AsyncSession = None
+        db: Optional[AsyncSession] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Perform semantic search across documents and KPIs."""
         results = {}

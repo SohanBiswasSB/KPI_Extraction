@@ -271,6 +271,7 @@ async function boot(){
   $('#login').classList.add('hide'); $('#app').classList.remove('hide');
   $('#who').innerHTML=esc(ME.email)+'<br><span class="chip">'+esc(ME.role)+'</span>';
   try{ ORGS=await api('/organizations/'); }catch(e){ ORGS=[]; }
+  await loadLookups();
   if(ORGS.length && !ORGS.find(o=>o.id===ORG)) ORG=ORGS[0].id;
   $('#nav').innerHTML=PAGES.map(([k,l])=>
     '<button data-p="'+k+'">'+l+'</button>').join('');
@@ -297,6 +298,21 @@ function wireOrg(){ const s=$('#orgsel');
 
 /* remember previous values so changes can be highlighted */
 let PREV={};
+/* id -> display-name maps so file rows can show who uploaded and for which org */
+let USERMAP={}, ORGMAP={};
+function nameOfUser(id){ return USERMAP[id] || (id?('user #'+id):'—'); }
+function nameOfOrg(id){ return ORGMAP[id] || (id?('org #'+id):'—'); }
+async function loadLookups(){
+  try{
+    const [us,os]=await Promise.all([
+      api('/users/?limit=500').catch(()=>[]),
+      api('/organizations/').catch(()=>[]),
+    ]);
+    USERMAP={}; us.forEach(u=>USERMAP[u.id]=u.full_name||u.username||u.email);
+    ORGMAP={};  os.forEach(o=>ORGMAP[o.id]=o.name);
+    if(os.length) ORGS=os;
+  }catch(e){ /* names are cosmetic; never block the table */ }
+}
 function tile(key,n,l){
   const bumped = PREV[key]!==undefined && PREV[key]!==n;
   PREV[key]=n;
@@ -373,6 +389,8 @@ function filesTable(list,acts){
       esc(f.original_filename||f.filename)+'</td><td>'+
       esc((f.file_type||'').split('/').pop())+'</td><td>'+
       (f.file_size?(f.file_size/1024).toFixed(0)+' KB':'—')+'</td><td>'+
+      '<span class="chip">'+esc(nameOfOrg(f.organization_id))+'</span></td><td>'+
+      esc(nameOfUser(f.uploaded_by))+'</td><td>'+
       statusChip(f)+'</td><td>'+(m.tables_extracted??'—')+'</td><td>'+
       (m.kpis_extracted??'—')+'</td><td>'+(m.embeddings_created??'—')+
       '</td><td>'+fmt(f.created_at)+'</td>'+
@@ -393,7 +411,17 @@ async function vFiles(){
   $('#view').innerHTML=head('Files','Upload a document and run extraction.');
   wireHead();
   $('#body').innerHTML=orgPicker()+
-    '<div class="card"><h3>Upload</h3><div class="row">'+
+    '<div class="card"><h3>Upload</h3>'+
+    '<div class="row" style="margin-bottom:12px">'+
+      '<div><label class="f">Organization (owns the file)</label>'+
+        '<select id="uorg">'+ORGS.map(o=>'<option value="'+o.id+'"'+
+          (o.id===ORG?' selected':'')+'>'+esc(o.name)+'</option>').join('')+
+        '</select></div>'+
+      '<div><label class="f">Uploaded by</label>'+
+        '<input value="'+esc((ME&&(ME.full_name||ME.username||ME.email))||'')+
+        '" disabled title="Files are attributed to the signed-in user"></div>'+
+    '</div>'+
+    '<div class="row">'+
       '<div style="flex:2"><label class="f">Document</label>'+
         '<div class="drop" id="drop"><b>Drop a file here</b> or click to browse<br>'+
         '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image · max 50 MB</span></div>'+
@@ -408,6 +436,7 @@ async function vFiles(){
   wireDrop();
   $('#ub').onclick=upload;
   CURRENT=async()=>{
+    if(!Object.keys(USERMAP).length) await loadLookups();
     const list=await api('/files/?limit=200&organization_id='+ORG);
     FAST = list.some(f=>f.status!=='completed'&&f.status!=='failed');
     $('#fl').innerHTML=filesTable(list);
@@ -451,7 +480,8 @@ async function upload(){
   const f=$('#uf').files[0];
   if(!f) return toast('Choose a file first','err');
   const fd=new FormData();
-  fd.append('file',f); fd.append('organization_id',ORG);
+  const targetOrg = +(($('#uorg')||{}).value || ORG);
+  fd.append('file',f); fd.append('organization_id',targetOrg);
   if($('#ud').value) fd.append('description',$('#ud').value);
   $('#ub').disabled=true;
   $('#uprog').innerHTML='<div class="bar"><i></i></div><div id="uel" '+
@@ -462,7 +492,9 @@ async function upload(){
   FAST=true; startTick();
   try{
     const r=await api('/files/upload',{method:'POST',body:fd});
-    toast('Uploaded: '+(r.file?.original_filename||f.name),'ok');
+    toast('Uploaded '+(r.file?.original_filename||f.name)+
+          ' to '+nameOfOrg(targetOrg),'ok');
+    if(targetOrg!==ORG){ ORG=targetOrg; localStorage.setItem('kpi_org',ORG); }
     $('#uf').value=''; $('#ud').value=''; wireDrop();
   }catch(e){ toast(e.message,'err'); }
   finally{

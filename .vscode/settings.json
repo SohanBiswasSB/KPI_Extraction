@@ -9,12 +9,20 @@
     // Without this, Pylance reports "Unable to import 'app.models.kpi'".
     "python.analysis.extraPaths": ["${workspaceFolder}/backend"],
     "python.analysis.autoSearchPaths": true,
-    "python.analysis.typeCheckingMode": "basic",
+    // Off, not "basic": this codebase uses legacy SQLAlchemy Column() rather
+    // than Mapped[] annotations, so a type checker reads every ORM field as
+    // Column[Any] and flags every assignment, comparison and arithmetic on it.
+    // Those are false positives. Pylance still reports import and syntax
+    // errors, which are the ones that matter here.
+    "python.analysis.typeCheckingMode": "off",
 
     // Run pylint from backend/ so it picks up .pylintrc and resolves app.*
     "pylint.cwd": "${workspaceFolder}/backend",
     "pylint.args": ["--rcfile=${workspaceFolder}/backend/.pylintrc"],
-    "pylint.importStrategy": "fromEnvironment",
+    // Bundled, not fromEnvironment: pylint is not installed in the conda env
+    // (it is not a runtime dependency), so fromEnvironment leaves the linter
+    // silently unable to start.
+    "pylint.importStrategy": "useBundled",
 
     // Tests and terminals start in backend/ too.
     "python.testing.pytestEnabled": true,

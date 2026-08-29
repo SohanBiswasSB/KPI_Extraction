@@ -1,13 +1,17 @@
 # Pylint configuration for the KPI Extraction backend.
 [MAIN]
 py-version = 3.12
+# Backend modules import as `app.*`, which only resolves with this directory on
+# the path. Without it every file reports import-error.
+init-hook = "import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath('.pylintrc')))"
 
 [FORMAT]
 max-line-length = 100
 
 [BASIC]
 # Short names and optional-import aliases used throughout the extraction engine.
-good-names = i,j,k,x,y,w,h,t,c,r,b,l,s,df,id,db,ci,ri,ap,fitz,openai,Image,pytesseract
+good-names = i,j,k,x,y,w,h,t,c,r,b,l,s,df,id,db,ci,ri,ap,fitz,openai,Image,pytesseract,
+            AsyncSessionLocal
 
 [MESSAGES CONTROL]
 # Disabled checks are deliberate design patterns in this codebase, not defects:
@@ -16,6 +20,8 @@ good-names = i,j,k,x,y,w,h,t,c,r,b,l,s,df,id,db,ci,ri,ap,fitz,openai,Image,pytes
 #   - too-many-*: the engine entry point exposes a deliberately wide keyword API
 #   - unused-argument: FastAPI injects auth/db dependencies (e.g. current_user) that
 #     run as a side effect via Depends even when a handler doesn't reference them
+#   - not-callable: SQLAlchemy builds func.<name> dynamically, so every
+#     server_default=func.now() is reported as E1102 despite being correct
 disable =
     unused-argument,
     broad-exception-caught,
@@ -25,4 +31,10 @@ disable =
     too-many-instance-attributes,
     too-many-return-statements,
     too-many-locals,
-    too-few-public-methods
+    too-few-public-methods,
+    not-callable
+
+[TYPECHECK]
+ignored-classes =
+    scoped_session,
+    sqlalchemy.orm.session.Session

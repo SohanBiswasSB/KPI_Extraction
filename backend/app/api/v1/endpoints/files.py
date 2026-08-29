@@ -1,4 +1,6 @@
 """File upload and table/KPI extraction API endpoints."""
+import json
+import logging
 import os
 from typing import List, Optional
 
@@ -24,6 +26,8 @@ from app.models.user import User
 from app.services.file_service import FileService
 from app.services.embedding_service import EmbeddingService
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -231,6 +235,58 @@ class AskResponse(BaseModel):
 
     answer: str
     sources: List[DocumentSearchResult] = []
+    retrieval: str = "hybrid (vector + keyword, RRF-fused)"
+
+
+def _rerank(question: str, candidates: List[dict], top_k: int) -> List[dict]:
+    """Reorder retrieved chunks by relevance using the configured LLM.
+
+    A cross-encoder (BGE, Cohere) is the textbook choice, but that means either
+    a cloud call or a second local model. Reusing the chat model as a judge
+    costs one extra request and captures most of the benefit. On any failure
+    the original hybrid order is returned unchanged — reranking must never be
+    able to break retrieval.
+    """
+    if len(candidates) <= top_k:
+        return candidates
+
+    listing = "\n\n".join(
+        f"[{i}] {c['content_chunk'][:600]}" for i, c in enumerate(candidates)
+    )
+    client = openai.OpenAI(
+        base_url=settings.LLM_BASE_URL,
+        api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "local",
+    )
+    try:
+        completion = client.chat.completions.create(
+            model=settings.LLM_MODEL,
+            temperature=0,
+            max_tokens=200,
+            messages=[
+                {"role": "system", "content":
+                 "You rank passages by how directly they answer a question. "
+                 "Reply with ONLY a JSON array of passage indices, best first. "
+                 "No prose."},
+                {"role": "user", "content":
+                 f"Question: {question}\n\nPassages:\n{listing}\n\n"
+                 f"Return the {top_k} most useful indices as a JSON array."},
+            ],
+        )
+        raw = (completion.choices[0].message.content or "").strip()
+        order = json.loads(raw[raw.index("["): raw.rindex("]") + 1])
+        picked = [candidates[i] for i in order
+                  if isinstance(i, int) and 0 <= i < len(candidates)]
+    except Exception as err:
+        logger.warning("Rerank failed, keeping hybrid order: %s", err)
+        return candidates[:top_k]
+
+    # Backfill from the original order if the model returned too few.
+    for cand in candidates:
+        if len(picked) >= top_k:
+            break
+        if cand not in picked:
+            picked.append(cand)
+    return picked[:top_k]
 
 
 @router.post("/ask", response_model=AskResponse)
@@ -247,14 +303,19 @@ async def ask_documents(
     """
     embedding_service = EmbeddingService()
     try:
-        chunks = await embedding_service.search_documents(
+        # Retrieve wider than we need, then rerank down. Hybrid search is good
+        # at surfacing candidates but poor at ordering them — the chunk that
+        # answers the question is often not the one with the best cosine score.
+        pool = max(body.top_k * 4, 12)
+        candidates = await embedding_service.search_documents_hybrid(
             query=body.question,
             organization_id=body.organization_id,
             file_ids=body.file_ids,
-            limit=body.top_k,
+            limit=pool,
             similarity_threshold=body.similarity_threshold,
             db=db,
         )
+        chunks = _rerank(body.question, candidates, body.top_k)
     except Exception as err:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {err}") from err
 
@@ -265,8 +326,13 @@ async def ask_documents(
             sources=[],
         )
 
+    def _label(c: dict) -> str:
+        meta = c.get("chunk_metadata") or {}
+        page = meta.get("page_number")
+        return f"{c['filename']}" + (f", Page {page}" if page else "")
+
     context = "\n\n---\n\n".join(
-        f"[source: {c['filename']}]\n{c['content_chunk']}" for c in chunks
+        f"[Source: {_label(c)}]\n{c['content_chunk']}" for c in chunks
     )
     client = openai.OpenAI(
         base_url=settings.LLM_BASE_URL,
@@ -281,8 +347,23 @@ async def ask_documents(
             max_tokens=4000,
             messages=[
                 {"role": "system", "content":
-                 "Answer strictly from the provided context. If the context does "
-                 "not contain the answer, say so plainly. Be concise."},
+                 "You answer strictly from the provided context.\n"
+                 "- If the answer is not in the context, say \"That is not "
+                 "stated in the provided documents.\" Do not guess.\n"
+                 "- Never supply a year, quarter, fiscal period, currency, "
+                 "scale or unit that is not written in the context. Column "
+                 "headers are often separated from their figures — if a "
+                 "period or unit is not shown, say it is not stated rather "
+                 "than inferring it.\n"
+                 "- Quote numbers exactly as they appear. Never rescale, "
+                 "convert or compute new figures.\n"
+                 "- If the question assumes something the documents do not "
+                 "cover (for example a quarter when only annual figures are "
+                 "present), say so before answering.\n"
+                 "- Name the line item you are quoting, and be concise.\n"
+                 "- CITE every figure inline using the bracketed source shown "
+                 "above it, e.g. \"revenue grew 12% [Source: Report.pdf, "
+                 "Page 14]\". A number without a citation is not acceptable."},
                 {"role": "user", "content":
                  f"Context:\n{context}\n\nQuestion: {body.question}"},
             ] + ([{"role": "assistant", "content": settings.LLM_THINK_PREFILL}]
