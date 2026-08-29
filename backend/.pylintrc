@@ -7,6 +7,10 @@ init-hook = "import sys, os; sys.path.insert(0, os.path.dirname(os.path.abspath(
 
 [FORMAT]
 max-line-length = 100
+# ai_service.py holds the extraction prompt, the JSON-recovery helpers and
+# the windowing logic together; splitting it would separate code that is
+# only meaningful as a unit.
+max-module-lines = 1200
 
 [BASIC]
 # Short names and optional-import aliases used throughout the extraction engine.

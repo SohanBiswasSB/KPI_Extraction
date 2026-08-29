@@ -312,6 +312,45 @@ class AIService:
             ]
         }
 
+    @staticmethod
+    def _merge_window_kpis(rows, window, idx, total, file_id, seen, out) -> int:
+        """Add one window's KPI rows to `out`; return how many were dropped.
+
+        A row is dropped when it has no name, duplicates one already seen, or
+        reports a number that does not appear in the window it came from.
+        """
+        dropped = 0
+        for raw_item in rows:
+            kpi_data = _as_kpi_dict(raw_item)
+            if kpi_data is None:
+                continue
+            name = str(kpi_data.get("kpi_name") or "").strip()
+            if not name or name.lower() in seen:
+                continue
+
+            value = _coerce_number(kpi_data.get("kpi_value"))
+            if not _value_in_text(value, window):
+                logger.warning(
+                    "Dropping ungrounded KPI %r=%s (not present in window %d)",
+                    name, value, idx + 1,
+                )
+                dropped += 1
+                continue
+
+            seen.add(name.lower())
+            out.append(ExtractedKPI(
+                file_id=file_id,
+                kpi_name=name[:255],
+                kpi_value=value,
+                kpi_unit=(str(kpi_data.get("kpi_unit"))[:50]
+                          if kpi_data.get("kpi_unit") else None),
+                confidence_score=kpi_data.get("confidence_score", 0.5),
+                extraction_method="ai",
+                raw_text="",
+                context=f"window {idx + 1}/{total}",
+            ))
+        return dropped
+
     async def extract_kpis_from_text(
         self, text: str, file_id: int, db: AsyncSession, progress_cb=None,
     ) -> List[ExtractedKPI]:
@@ -399,40 +438,11 @@ class AIService:
             if kpis_data is None:
                 continue
             any_success = True
-            if not isinstance(kpis_data, list):
-                continue
-
-            for raw_item in kpis_data:
-                kpi_data = _as_kpi_dict(raw_item)
-                if kpi_data is None:
-                    continue
-                name = str(kpi_data.get("kpi_name") or "").strip()
-                if not name:
-                    continue
-                key = name.lower()
-                if key in seen:
-                    continue
-                value = _coerce_number(kpi_data.get("kpi_value"))
-                if not _value_in_text(value, windows[idx]):
-                    logger.warning(
-                        "Dropping ungrounded KPI %r=%s (not present in window %d)",
-                        name, value, idx + 1,
-                    )
-                    dropped += 1
-                    continue
-
-                seen.add(key)
-                extracted_kpis.append(ExtractedKPI(
-                    file_id=file_id,
-                    kpi_name=name[:255],
-                    kpi_value=value,
-                    kpi_unit=(str(kpi_data.get("kpi_unit"))[:50]
-                              if kpi_data.get("kpi_unit") else None),
-                    confidence_score=kpi_data.get("confidence_score", 0.5),
-                    extraction_method="ai",
-                    raw_text="",
-                    context=f"window {idx + 1}/{len(windows)}",
-                ))
+            if isinstance(kpis_data, list):
+                dropped += self._merge_window_kpis(
+                    kpis_data, windows[idx], idx, len(windows),
+                    file_id, seen, extracted_kpis,
+                )
 
         if dropped:
             logger.info("Dropped %d ungrounded KPI(s) not found in the source text",
