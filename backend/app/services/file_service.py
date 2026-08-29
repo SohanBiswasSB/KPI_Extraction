@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 import aiofiles
 from fastapi import UploadFile, HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -93,6 +94,21 @@ class FileService:
     # ------------------------------------------------------------------ #
     # Processing pipeline
     # ------------------------------------------------------------------ #
+    @staticmethod
+    async def _set_stage(record, db: AsyncSession, stage: str, **extra) -> None:
+        """Publish the current pipeline stage so clients can poll real progress.
+
+        Committed immediately: the upload request is still in flight, so this is
+        the only way a polling UI can see which step is running.
+        """
+        record.processing_metadata = {
+            **(record.processing_metadata or {}),
+            "stage": stage,
+            **extra,
+        }
+        flag_modified(record, "processing_metadata")
+        await db.commit()
+
     async def process_file_async(self, file_id: int, db: AsyncSession) -> Dict[str, Any]:
         """Extract tables (+ best-effort KPIs/embeddings) for a stored file."""
         record = await self._get_file(file_id, db)
@@ -102,7 +118,10 @@ class FileService:
 
         try:
             # 1. Structured table extraction (the core of the platform).
+            await self._set_stage(record, db, "extracting_tables")
             tables = await self._extract_and_store_tables(record, db)
+            await self._set_stage(record, db, "tables_done",
+                                  tables_extracted=len(tables))
 
             # 2. Best-effort KPI extraction from a flattened text view of the tables.
             text_view = self._tables_to_text(tables)
@@ -115,6 +134,7 @@ class FileService:
                 await db.delete(stale)
 
             kpi_count = 0
+            await self._set_stage(record, db, "extracting_kpis")
             try:
                 kpis = await self.ai_service.extract_kpis_from_text(text_view, file_id, db)
                 for kpi in kpis:
@@ -133,20 +153,26 @@ class FileService:
             for stale in stale_embeddings.scalars().all():
                 await db.delete(stale)
 
+            await self._set_stage(record, db, "embedding",
+                                  kpis_extracted=kpi_count)
+            embedding_count = 0
             try:
                 embeddings = await self.embedding_service.create_document_embeddings(
                     file_id, text_view, db
                 )
                 for emb in embeddings:
                     db.add(emb)
+                embedding_count = len(embeddings)
             except Exception as exc:
                 logger.warning("Embeddings skipped for file %s: %s", file_id, exc)
 
             record.status = FileStatus.COMPLETED
             record.processing_metadata = {
                 **(record.processing_metadata or {}),
+                "stage": "done",
                 "tables_extracted": len(tables),
                 "kpis_extracted": kpi_count,
+                "embeddings_created": embedding_count,
             }
             await db.commit()
             return {

@@ -37,14 +37,24 @@ class Settings(BaseSettings):
     # Active: LM Studio's OpenAI-compatible server (default port 1234).
     LLM_BASE_URL: str = "http://localhost:1234/v1"
     LLM_API_KEY: Optional[str] = None                  # falls back to a placeholder if unset
-    LLM_MODEL: str = "google/gemma-4-26b-a4b-qat"
-    # Same multimodal model serves the vision path; only used when ENABLE_VLM is true.
-    # NOTE: gemma-4 is a *reasoning* model — it spends 1.5-2k tokens thinking before
-    # answering, so every max_tokens in ai_service.py must stay well above that.
+    LLM_MODEL: str = "qwen2.5-7b-instruct-1m"
+
+    # Vision path (scanned pages -> tables). Only used when ENABLE_VLM is true.
+    # NOTE: qwen2.5-7b-instruct is TEXT-ONLY, so this points at a genuinely
+    # multimodal model. On a 24GB machine the two cannot be resident together
+    # (15.6GB + 4.7GB), so enabling VLM means swapping LLM_MODEL as well.
     LLM_VISION_MODEL: str = "google/gemma-4-26b-a4b-qat"
+
     # EmbeddingGemma-300M: 768-dim, matches vector(768) in init.sql. Tiny (229MB),
-    # so it can stay resident alongside the 15.6GB chat model on a 24GB machine.
+    # so it stays resident alongside the 4.7GB chat model.
     LLM_EMBEDDING_MODEL: str = "text-embedding-embeddinggemma-300m-qat"
+
+    # Reasoning models (Qwen3, Gemma-4) spend their whole token budget "thinking"
+    # and often return an empty message; prefilling an already-closed think block
+    # makes them answer immediately (measured 59s/empty -> 7s/correct on
+    # bonsai-27b). qwen2.5-7b-instruct is NOT a reasoning model, so this is
+    # disabled — set it to "<think>\n\n</think>\n\n" if you switch back.
+    LLM_THINK_PREFILL: str = ""
 
     # Back-compat: legacy code/env may still reference these.
     OPENAI_API_KEY: Optional[str] = None

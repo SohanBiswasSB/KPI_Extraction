@@ -284,7 +284,8 @@ async def ask_documents(
                  "not contain the answer, say so plainly. Be concise."},
                 {"role": "user", "content":
                  f"Context:\n{context}\n\nQuestion: {body.question}"},
-            ],
+            ] + ([{"role": "assistant", "content": settings.LLM_THINK_PREFILL}]
+                 if settings.LLM_THINK_PREFILL else []),
         )
         answer = (completion.choices[0].message.content or "").strip()
         if not answer:

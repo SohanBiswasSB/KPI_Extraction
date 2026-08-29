@@ -8,6 +8,10 @@ from typing import List, Dict, Any, Optional
 
 import numpy as np
 import openai
+from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionMessageParam,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +23,25 @@ from app.services.embedding_service import EmbeddingService
 logger = logging.getLogger(__name__)
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+
+
+def _with_think_prefill(
+    messages: List[ChatCompletionMessageParam],
+) -> List[ChatCompletionMessageParam]:
+    """Append a pre-closed thinking block so reasoning models answer immediately.
+
+    Qwen3/Gemma-style reasoning models otherwise spend the whole token budget in
+    their think block and return an empty message. Seeding the assistant turn
+    with an already-closed block skips that. No-op when LLM_THINK_PREFILL is "".
+    """
+    prefill = getattr(settings, "LLM_THINK_PREFILL", "")
+    if not prefill:
+        return messages
+    tail: ChatCompletionAssistantMessageParam = {
+        "role": "assistant",
+        "content": prefill,
+    }
+    return [*messages, tail]
 
 
 def _parse_json_response(content: Optional[str]) -> Any:
@@ -38,13 +61,19 @@ def _parse_json_response(content: Optional[str]) -> Any:
     except json.JSONDecodeError:
         pass
 
+    # Try the span that starts EARLIEST in the text. Checking "{" first would
+    # pull the first object out of a fenced array ("[{...}, {...}]") and silently
+    # drop every later item.
+    spans = []
     for opener, closer in (("{", "}"), ("[", "]")):
         start, end = text.find(opener), text.rfind(closer)
         if start != -1 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                continue
+            spans.append((start, text[start:end + 1]))
+    for _, candidate in sorted(spans):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
     raise ValueError(f"no JSON found in model response: {content[:200]!r}")
 
 
@@ -122,7 +151,7 @@ class AIService:
 
             response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.1,
                 max_tokens=4000
             )
@@ -302,7 +331,7 @@ class AIService:
 
             response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.3,
                 max_tokens=4000
             )
@@ -404,7 +433,7 @@ class AIService:
 
             response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.3,
                 max_tokens=4000
             )
@@ -490,7 +519,7 @@ class AIService:
 
             response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.2,
                 max_tokens=4000
             )
@@ -553,7 +582,7 @@ class AIService:
 
             response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.3,
                 max_tokens=4000,
             )
@@ -718,7 +747,7 @@ class AIService:
 
             response = self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.2,
                 max_tokens=4000
             )

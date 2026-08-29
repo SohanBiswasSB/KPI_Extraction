@@ -103,6 +103,39 @@ pre{background:var(--chip);padding:11px;border-radius:8px;overflow-x:auto;font-s
   animation:slide 1.3s ease-in-out infinite}
 @keyframes slide{0%{margin-left:-30%}100%{margin-left:100%}}
 .stale{opacity:.55;transition:opacity .2s}
+
+/* pipeline stepper */
+.steps{display:flex;gap:0;margin:10px 0 2px;flex-wrap:wrap}
+.step{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);
+  padding:5px 12px 5px 0}
+.step .ic{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);
+  display:grid;place-items:center;font-size:9px;flex:none}
+.step.done{color:var(--ok)} .step.done .ic{border-color:var(--ok);background:var(--ok);
+  color:#fff}
+.step.now{color:var(--accent);font-weight:600}
+.step.now .ic{border-color:var(--accent);border-top-color:transparent;
+  animation:s .7s linear infinite}
+.step .arrow{color:var(--line);margin-left:6px}
+
+/* dropzone */
+.drop{border:1.5px dashed var(--line);border-radius:10px;padding:22px;text-align:center;
+  color:var(--muted);transition:all .15s;cursor:pointer}
+.drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent);
+  color:var(--accent)}
+.drop b{color:var(--ink)}
+.drop .fname{color:var(--ink);font-weight:600}
+
+/* empty state */
+.es{text-align:center;padding:34px 20px;color:var(--muted)}
+.es .big{font-size:15px;color:var(--ink);font-weight:600;margin-bottom:5px}
+.es code{background:var(--chip);padding:2px 6px;border-radius:5px;font-size:12px}
+
+/* activity strip */
+.act{display:flex;align-items:center;gap:10px;background:var(--panel);
+  border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;
+  padding:11px 14px;margin-bottom:14px;font-size:13px}
+kbd{background:var(--chip);border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:5px;padding:1px 5px;font-size:11px;font-family:inherit}
 </style>
 </head>
 <body>
@@ -297,15 +330,38 @@ async function vOverview(){
 }
 
 /* ---------- files ---------- */
-function statusChip(s){
+const STAGES=[['extracting_tables','Tables'],['extracting_kpis','KPIs'],
+              ['embedding','Embeddings'],['done','Done']];
+const STAGE_LABEL={extracting_tables:'Extracting tables',tables_done:'Tables extracted',
+  extracting_kpis:'Extracting KPIs with the model',embedding:'Building embeddings',
+  done:'Complete'};
+function statusChip(f){
+  const s=f.status, st=(f.processing_metadata||{}).stage;
   if(s==='completed') return '<span class="chip ok">completed</span>';
   if(s==='failed')    return '<span class="chip err">failed</span>';
-  return '<span class="chip warn"><span class="spin"></span> '+esc(s||'pending')+'</span>';
+  return '<span class="chip warn"><span class="spin"></span> '+
+    esc(STAGE_LABEL[st]||s||'pending')+'</span>';
+}
+/* real pipeline progress, driven by processing_metadata.stage from the backend */
+function stepper(meta){
+  const cur=(meta||{}).stage||'';
+  const order=['extracting_tables','tables_done','extracting_kpis','embedding','done'];
+  const at=order.indexOf(cur);
+  return '<div class="steps">'+STAGES.map(([key,label],i)=>{
+    const pos=order.indexOf(key);
+    const done = at>pos || cur==='done';
+    const now  = !done && (cur===key || (key==='extracting_tables'&&at<0));
+    return '<div class="step'+(done?' done':now?' now':'')+'">'+
+      '<span class="ic">'+(done?'✓':'')+'</span>'+esc(label)+'</div>'+
+      (i<STAGES.length-1?'<span class="step arrow">→</span>':'');
+  }).join('')+'</div>';
 }
 let SEEN=new Set();
 function filesTable(list,acts){
   const A=acts!==false;
-  if(!list.length) return '<div class="empty">No files yet.</div>';
+  if(!list.length) return '<div class="es"><div class="big">No documents yet</div>'+
+    'Drop a PDF, XLSX, DOCX or CSV above to start. The pipeline will extract '+
+    'tables, pull KPIs, and index the text for search.</div>';
   return '<div class="tw"><table><thead><tr><th>ID</th><th>Name</th><th>Type</th>'+
     '<th>Size</th><th>Status</th><th>Tables</th><th>KPIs</th><th>Uploaded</th>'+
     (A?'<th></th>':'')+'</tr></thead><tbody>'+
@@ -317,15 +373,20 @@ function filesTable(list,acts){
       esc(f.original_filename||f.filename)+'</td><td>'+
       esc((f.file_type||'').split('/').pop())+'</td><td>'+
       (f.file_size?(f.file_size/1024).toFixed(0)+' KB':'—')+'</td><td>'+
-      statusChip(f.status)+'</td><td>'+(m.tables_extracted??'—')+'</td><td>'+
-      (m.kpis_extracted??'—')+'</td><td>'+fmt(f.created_at)+'</td>'+
+      statusChip(f)+'</td><td>'+(m.tables_extracted??'—')+'</td><td>'+
+      (m.kpis_extracted??'—')+'</td><td>'+(m.embeddings_created??'—')+
+      '</td><td>'+fmt(f.created_at)+'</td>'+
       (A?'<td class="acts">'+
         '<button data-t="'+f.id+'"'+(busy?' disabled':'')+'>Tables</button>'+
         '<button data-x="'+f.id+'"'+(busy?' disabled':'')+'>Extract KPIs</button>'+
         '<button data-k="'+f.id+'"'+(busy?' disabled':'')+'>KPIs</button>'+
         '<button class="d" data-del="'+f.id+'">Delete</button>'+
       '</td>':'')+'</tr>';
-    }).join('')+'</tbody></table></div>';
+    }).join('')+'</tbody></table></div>'+
+    (A?list.filter(f=>f.status!=='completed'&&f.status!=='failed').map(f=>
+      '<div class="act"><span class="spin"></span><div style="flex:1">'+
+      '<b>#'+f.id+' '+esc(f.original_filename||f.filename)+'</b>'+
+      stepper(f.processing_metadata)+'</div></div>').join(''):'');
 }
 async function vFiles(){
   $('#view').innerHTML=head('Files','Upload a document and run extraction.');
@@ -333,15 +394,17 @@ async function vFiles(){
   $('#body').innerHTML=orgPicker()+
     '<div class="card"><h3>Upload</h3><div class="row">'+
       '<div style="flex:2"><label class="f">Document</label>'+
-        '<input type="file" id="uf" accept=".pdf,.xlsx,.xls,.docx,.csv,.png,.jpg,.jpeg"></div>'+
+        '<div class="drop" id="drop"><b>Drop a file here</b> or click to browse<br>'+
+        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image · max 50 MB</span></div>'+
+        '<input type="file" id="uf" class="hide" '+
+        'accept=".pdf,.xlsx,.xls,.docx,.csv,.png,.jpg,.jpeg"></div>'+
       '<div><label class="f">Description</label><input id="ud" placeholder="optional"></div>'+
-      '<div style="flex:0"><button class="p" id="ub">Upload</button></div>'+
-    '</div><div id="uprog"></div>'+
-    '<div style="color:var(--muted);font-size:12px;margin-top:9px">'+
-      'PDF, XLSX, DOCX, CSV or image · max 50 MB</div></div>'+
+      '<div style="flex:0"><button class="p" id="ub" disabled>Upload</button></div>'+
+    '</div><div id="uprog"></div></div>'+
     '<div class="card"><h3>All files</h3><div id="fl"><span class="spin"></span></div></div>'+
     '<div id="detail"></div>';
   wireOrg();
+  wireDrop();
   $('#ub').onclick=upload;
   CURRENT=async()=>{
     const list=await api('/files/?limit=200&organization_id='+ORG);
@@ -351,6 +414,30 @@ async function vFiles(){
   };
   await refreshNow(false); startTick();
 }
+function wireDrop(){
+  const z=$('#drop'), inp=$('#uf'), btn=$('#ub');
+  const show=()=>{
+    const f=inp.files[0];
+    z.innerHTML = f
+      ? '<span class="fname">'+esc(f.name)+'</span><br><span style="font-size:12px">'+
+        (f.size/1024).toFixed(0)+' KB · click to change</span>'
+      : '<b>Drop a file here</b> or click to browse<br>'+
+        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image · max 50 MB</span>';
+    btn.disabled=!f;
+  };
+  z.onclick=()=>inp.click();
+  inp.onchange=show;
+  ['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{
+    e.preventDefault(); z.classList.add('over'); }));
+  ['dragleave','drop'].forEach(ev=>z.addEventListener(ev,e=>{
+    e.preventDefault(); z.classList.remove('over'); }));
+  z.addEventListener('drop',e=>{
+    const f=e.dataTransfer.files[0];
+    if(f){ const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files; show(); }
+  });
+  show();
+}
+
 function elapsed(el,label){
   const t0=Date.now();
   const id=setInterval(()=>{
@@ -367,12 +454,15 @@ async function upload(){
   if($('#ud').value) fd.append('description',$('#ud').value);
   $('#ub').disabled=true;
   $('#uprog').innerHTML='<div class="bar"><i></i></div><div id="uel" '+
-    'style="font-size:12px;color:var(--muted);margin-top:6px"></div>';
-  const stop=elapsed($('#uel'),'Uploading & extracting —');
+    'style="font-size:12px;color:var(--muted);margin-top:6px"></div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-top:4px">'+
+    'Tables → KPIs → embeddings. Progress appears in the list below.</div>';
+  const stop=elapsed($('#uel'),'Uploading & processing —');
+  FAST=true; startTick();
   try{
     const r=await api('/files/upload',{method:'POST',body:fd});
     toast('Uploaded: '+(r.file?.original_filename||f.name),'ok');
-    $('#uf').value=''; $('#ud').value='';
+    $('#uf').value=''; $('#ud').value=''; wireDrop();
   }catch(e){ toast(e.message,'err'); }
   finally{
     stop(); $('#uprog').innerHTML=''; $('#ub').disabled=false;
@@ -416,7 +506,9 @@ async function onFileAct(e){
           '</td><td>'+esc(x.kpi_unit||'—')+'</td><td>'+(x.confidence_score??'—')+
           '</td><td><span class="chip">'+esc(x.extraction_method||'—')+
           '</span></td></tr>').join('')+'</tbody></table></div>':
-        '<div class="empty">No KPIs yet — run Extract KPIs first.</div>')+'</div>';
+        '<div class="es"><div class="big">Nothing extracted</div>'+
+        'The model found no KPIs in this document, or it returned an empty '+
+        'response. Try <b>Extract KPIs</b> again.</div>')+'</div>';
     }catch(err){ d.innerHTML='<div class="card"><div class="empty">'+
       esc(err.message)+'</div></div>'; }
   }
@@ -429,7 +521,9 @@ async function onFileAct(e){
   }
 }
 function renderTables(list){
-  if(!list||!list.length) return '<div class="empty">No tables extracted from this file.</div>';
+  if(!list||!list.length) return '<div class="es"><div class="big">No tables found</div>'+
+    'The extractor found no tabular structure. Scanned PDFs need OCR, and the '+
+    'vision path is off by default.</div>';
   return list.slice(0,20).map(t=>{
     const rows=t.rows||[]; const head=rows[0]||[], body=rows.slice(1,26);
     return '<div style="margin-bottom:18px"><div style="color:var(--muted);'+
@@ -458,7 +552,8 @@ async function vAsk(){
       '<div style="flex:0 0 120px"><label class="f">Chunks</label>'+
         '<input id="tk" type="number" value="5" min="1" max="20"></div>'+
       '<div style="flex:0"><button class="p" id="ab">Ask</button></div>'+
-      '<div style="color:var(--muted);font-size:12px;align-self:center">Cmd+Enter</div>'+
+      '<div style="color:var(--muted);font-size:12px;align-self:center">'+
+        '<kbd>Cmd</kbd>+<kbd>Enter</kbd> to ask</div>'+
     '</div><div id="aprog"></div></div><div id="ans"></div>';
   wireOrg();
   // Ask is user-driven: no polling, but keep the corpus count fresh.
@@ -519,7 +614,9 @@ async function vKpis(){
       esc(x.unit||'—')+'</td><td>'+fmt(x.created_at)+'</td>'+
       '<td class="acts"><button class="d" data-dk="'+x.id+'">Delete</button></td>'+
       '</tr>').join('')+'</tbody></table></div>':
-      '<div class="empty">No KPIs yet. Upload a file and run Extract KPIs.</div>';
+      '<div class="es"><div class="big">No KPIs yet</div>'+
+      'These are <b>curated</b> KPIs. Raw model output lands in a file\'s '+
+      '<code>Extracted KPIs</code> view first — open <b>Files</b> → <b>KPIs</b>.</div>';
     $('#kl').onclick=async e=>{
       const b=e.target.closest('button[data-dk]'); if(!b) return;
       if(!confirm('Delete KPI #'+b.dataset.dk+'?')) return;

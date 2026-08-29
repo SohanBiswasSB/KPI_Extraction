@@ -1,0 +1,23 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+
+    // Conda env for this project (Python 3.12.13, all backend deps installed).
+    "python.defaultInterpreterPath": "/opt/homebrew/Caskroom/miniforge/base/envs/KPI_Extraction/bin/python",
+
+    // Backend code imports as `app.*`, which only resolves from backend/.
+    // Without this, Pylance reports "Unable to import 'app.models.kpi'".
+    "python.analysis.extraPaths": ["${workspaceFolder}/backend"],
+    "python.analysis.autoSearchPaths": true,
+    "python.analysis.typeCheckingMode": "basic",
+
+    // Run pylint from backend/ so it picks up .pylintrc and resolves app.*
+    "pylint.cwd": "${workspaceFolder}/backend",
+    "pylint.args": ["--rcfile=${workspaceFolder}/backend/.pylintrc"],
+    "pylint.importStrategy": "fromEnvironment",
+
+    // Tests and terminals start in backend/ too.
+    "python.testing.pytestEnabled": true,
+    "python.testing.cwd": "${workspaceFolder}/backend",
+    "python.terminal.activateEnvironment": true
+}
