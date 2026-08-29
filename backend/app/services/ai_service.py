@@ -6,6 +6,8 @@ import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+import urllib.request
+
 import numpy as np
 import openai
 from openai.types.chat import (
@@ -44,6 +46,35 @@ def _with_think_prefill(
     return [*messages, tail]
 
 
+def _detect_context_chars(base_url: str, model: str, reply_tokens: int) -> Optional[int]:
+    """Ask the local server how much context the model actually has loaded.
+
+    LM Studio silently re-loads a model at its default context (often 8192)
+    after a JIT restart, so a hardcoded window size can start overflowing
+    mid-run. Sizing from the live value makes that self-correcting.
+    Returns a char budget, or None if the server does not report one.
+    """
+    try:
+        endpoint = base_url.rstrip("/")
+        if endpoint.endswith("/v1"):
+            endpoint = endpoint[:-3]
+        with urllib.request.urlopen(endpoint + "/api/v0/models", timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:  # not LM Studio, or unreachable — caller falls back
+        return None
+
+    for entry in data.get("data", []):
+        if entry.get("id") == model and entry.get("state") != "not-loaded":
+            ctx = entry.get("loaded_context_length")
+            if not ctx:
+                return None
+            # Leave room for the reply and prompt scaffolding, then convert
+            # tokens -> chars at a deliberately conservative 3 chars/token.
+            usable = max(int(ctx) - reply_tokens - 512, 512)
+            return usable * 3
+    return None
+
+
 def _split_windows(text: str, size: int, max_windows: int) -> List[str]:
     """Cut the document into model-sized windows, preferring table boundaries."""
     if not text:
@@ -66,6 +97,21 @@ def _split_windows(text: str, size: int, max_windows: int) -> List[str]:
     if current.strip():
         windows.append(current)
     return windows[:max_windows]
+
+
+def _as_kpi_dict(item: Any) -> Optional[Dict[str, Any]]:
+    """Normalise one model-returned KPI into a dict.
+
+    Models drift between the requested object form and a positional array
+    ["name", value, "unit", confidence]. Rejecting non-dicts silently dropped
+    every row of an otherwise perfect response, so accept both shapes.
+    """
+    if isinstance(item, dict):
+        return item
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        keys = ("kpi_name", "kpi_value", "kpi_unit", "confidence_score")
+        return dict(zip(keys, list(item)[:4]))
+    return None
 
 
 def _coerce_number(value: Any) -> Optional[float]:
@@ -209,23 +255,57 @@ class AIService:
         seen: set = set()
         any_success = False
 
-        windows = _split_windows(text, settings.KPI_WINDOW_CHARS,
-                                 settings.KPI_MAX_WINDOWS)
-        logger.info("KPI extraction: %d window(s) over %d chars", len(windows), len(text))
+        reply_tokens = 2000
+        detected = _detect_context_chars(
+            settings.LLM_BASE_URL, settings.LLM_MODEL, reply_tokens
+        )
+        window_chars = min(settings.KPI_WINDOW_CHARS,
+                           detected or settings.KPI_WINDOW_CHARS)
+
+        needed = _split_windows(text, window_chars, 10**6)
+        windows = needed[: settings.KPI_MAX_WINDOWS]
+        logger.info(
+            "KPI extraction: %d/%d window(s) of %d chars over %d chars "
+            "(model context allows ~%s chars)",
+            len(windows), len(needed), window_chars, len(text),
+            detected if detected else "unknown",
+        )
+        if len(needed) > len(windows):
+            logger.warning(
+                "Document exceeds KPI_MAX_WINDOWS=%d: %d window(s) (~%d chars) "
+                "will NOT be scanned",
+                settings.KPI_MAX_WINDOWS, len(needed) - len(windows),
+                sum(len(w) for w in needed[settings.KPI_MAX_WINDOWS:]),
+            )
 
         for idx, window in enumerate(windows):
             prompt = f"""
             Extract business KPIs (Key Performance Indicators) from the text.
 
             Rules:
-            - Return ONLY a JSON array. No prose before or after.
-            - Use ONLY numbers that appear in the text below. Never recall
-              figures from memory. If the text has no metrics, return [].
+            - Return ONLY a JSON array of OBJECTS. No prose, no arrays-of-arrays.
+            - Use ONLY numbers that appear verbatim in the text below. Never
+              recall figures from memory. If the text has no metrics, return [].
             - At most 20 KPIs from this excerpt, the most significant ones.
-            - kpi_value must be a plain number (no commas, currency symbols or
-              percent signs) or null. Put the unit in kpi_unit.
-            - If the table states a scale such as "(In millions)", reflect it in
-              kpi_unit, e.g. "USD millions" or "%".
+            - Copy the number EXACTLY as printed, minus commas. Do not rescale,
+              convert, sum or compute anything. 7.46 stays 7.46, never 14.78.
+            - Negative numbers are often shown in parentheses: (321) -> -321.
+
+            UNITS AND SCALE — read the table's own header before deciding:
+            - Statements usually declare a scale, e.g. "(In millions)" or
+              "(In thousands)". That scale applies to the money rows in that
+              table, so kpi_unit becomes "USD millions" / "USD thousands".
+            - A header can declare DIFFERENT scales for different rows, e.g.
+              "net income in millions and shares in thousands". Match each row
+              to its own scale.
+            - Per-share amounts are literal dollars, NOT scaled:
+              kpi_unit = "USD per share".
+            - Share/unit counts are not money: kpi_unit = "shares thousands"
+              (or "shares") — never "USD".
+            - Percentages: kpi_unit = "%" and strip the % sign from the value.
+            - Ratios or plain counts with no unit: kpi_unit = null.
+            - Never put a scale word inside kpi_value; it belongs in kpi_unit.
+
             - Include the period in kpi_name when a column identifies one,
               e.g. "Total net sales (FY2025)".
             - Keep every field short. Do NOT echo the source text back.
@@ -259,8 +339,9 @@ class AIService:
             if not isinstance(kpis_data, list):
                 continue
 
-            for kpi_data in kpis_data:
-                if not isinstance(kpi_data, dict):
+            for raw_item in kpis_data:
+                kpi_data = _as_kpi_dict(raw_item)
+                if kpi_data is None:
                     continue
                 name = str(kpi_data.get("kpi_name") or "").strip()
                 if not name:

@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     # 4000 chars (which on a 10-K is just the SEC cover page). Window size must
     # leave room for the reply inside the model's loaded context.
     KPI_WINDOW_CHARS: int = 24000
-    KPI_MAX_WINDOWS: int = 14
+    KPI_MAX_WINDOWS: int = 40
 
     # Vector database settings
     # Must match LLM_EMBEDDING_MODEL and the vector() dimension in init.sql.
