@@ -43,6 +43,9 @@ class User(Base):
     dashboards = relationship("Dashboard", back_populates="created_by_user")
     kpis = relationship("KPI", back_populates="created_by_user")
     uploaded_files = relationship("UploadedFile", back_populates="uploaded_by_user")
+    # Association rows linking this user to organizations (mirrors
+    # Organization.users); the users endpoints selectinload this.
+    organizations = relationship("UserOrganization", back_populates="user")
     # DashboardShare has two FKs to users (shared_with / shared_by), so the
     # join column must be named explicitly on this side too.
     shared_dashboards = relationship(

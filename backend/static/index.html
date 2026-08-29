@@ -160,7 +160,7 @@ function logout(){
 }
 
 /* ---------- shell ---------- */
-const PAGES=[['overview','Overview'],['files','Files'],['kpis','KPIs'],
+const PAGES=[['overview','Overview'],['files','Files'],['ask','Ask'],['kpis','KPIs'],
              ['users','Users'],['orgs','Organizations']];
 let PAGE='overview';
 
@@ -179,7 +179,8 @@ async function boot(){
 function render(){
   document.querySelectorAll('#nav button').forEach(b=>
     b.classList.toggle('on',b.dataset.p===PAGE));
-  ({overview:vOverview,files:vFiles,kpis:vKpis,users:vUsers,orgs:vOrgs})[PAGE]();
+  ({overview:vOverview,files:vFiles,ask:vAsk,kpis:vKpis,users:vUsers,
+    orgs:vOrgs})[PAGE]();
 }
 function orgPicker(){
   if(ORGS.length<2) return '';
@@ -207,7 +208,9 @@ async function vOverview(){
       tile(kpis.length,'KPIs')+ tile(users.length,'Users')+
       tile(ORGS.length,'Organizations')+
     '</div>'+
-    '<div class="card"><h3>Recent files</h3>'+filesTable(files.slice(0,5))+'</div>';
+    '<div class="card"><h3>Recent files</h3>'+filesTable(files.slice(0,5),false)+
+    '<div style="color:var(--muted);font-size:12px;margin-top:10px">'+
+    'Open <b>Files</b> to upload, extract and inspect.</div></div>';
 }
 const tile=(n,l)=>'<div class="tile"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>';
 
@@ -216,20 +219,21 @@ function statusChip(s){
   const k=s==='completed'?'ok':s==='failed'?'err':s==='processing'?'warn':'';
   return '<span class="chip '+k+'">'+esc(s||'—')+'</span>';
 }
-function filesTable(list){
+function filesTable(list,acts){
   if(!list.length) return '<div class="empty">No files yet.</div>';
+  const A=acts!==false;
   return '<div class="tw"><table><thead><tr><th>ID</th><th>Name</th><th>Type</th>'+
     '<th>Size</th><th>Status</th><th>Uploaded</th><th></th></tr></thead><tbody>'+
     list.map(f=>'<tr><td>'+f.id+'</td><td>'+esc(f.original_filename||f.filename)+
       '</td><td>'+esc((f.file_type||'').split('/').pop())+'</td><td>'+
       (f.file_size?(f.file_size/1024).toFixed(0)+' KB':'—')+'</td><td>'+
       statusChip(f.status)+'</td><td>'+fmt(f.created_at)+'</td>'+
-      '<td class="acts">'+
+      (A?'<td class="acts">'+
         '<button data-t="'+f.id+'">Tables</button>'+
         '<button data-x="'+f.id+'">Extract KPIs</button>'+
         '<button data-k="'+f.id+'">KPIs</button>'+
         '<button class="d" data-del="'+f.id+'">Delete</button>'+
-      '</td></tr>').join('')+'</tbody></table></div>';
+      '</td>':'')+'</tr>').join('')+'</tbody></table></div>';
 }
 async function vFiles(){
   $('#view').innerHTML='<h2>Files</h2><p class="sub">Upload a document and run extraction.</p>'+
@@ -326,6 +330,45 @@ function renderTables(list){
       (rows.length>26?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+
         '… '+(rows.length-26)+' more rows</div>':'')+'</div>';
   }).join('');
+}
+
+/* ---------- ask (RAG) ---------- */
+async function vAsk(){
+  $('#view').innerHTML='<h2>Ask</h2>'+
+    '<p class="sub">Question your uploaded documents. Answers are generated from '+
+    'retrieved chunks and cite their sources.</p>'+orgPicker()+
+    '<div class="card"><label class="f">Question</label>'+
+    '<textarea id="q" rows="3" placeholder="e.g. What was revenue in Q3 and how much did it grow?"></textarea>'+
+    '<div class="row" style="margin-top:11px">'+
+      '<div style="flex:0 0 120px"><label class="f">Chunks</label>'+
+        '<input id="tk" type="number" value="5" min="1" max="20"></div>'+
+      '<div style="flex:0"><button class="p" id="ab">Ask</button></div>'+
+    '</div></div><div id="ans"></div>';
+  wireOrg();
+  const go=async()=>{
+    const q=$('#q').value.trim(); if(!q) return toast('Type a question','err');
+    $('#ab').disabled=true; $('#ab').innerHTML='<span class="spin"></span> Thinking';
+    $('#ans').innerHTML='<div class="card"><span class="spin"></span> '+
+      'Retrieving chunks and asking the model — 30-60s.</div>';
+    try{
+      const r=await api('/files/ask',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({question:q,organization_id:ORG,top_k:+$('#tk').value})});
+      $('#ans').innerHTML='<div class="card"><h3>Answer</h3>'+
+        '<div style="white-space:pre-wrap;line-height:1.65">'+esc(r.answer)+'</div></div>'+
+        '<div class="card"><h3>Sources ('+r.sources.length+')</h3>'+
+        (r.sources.length?r.sources.map(s=>
+          '<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--muted);'+
+          'margin-bottom:5px">'+esc(s.filename)+' · similarity '+
+          s.similarity_score.toFixed(3)+'</div><pre>'+esc(s.content_chunk.slice(0,700))+
+          '</pre></div>').join(''):'<div class="empty">No sources.</div>')+'</div>';
+    }catch(e){ $('#ans').innerHTML='<div class="card"><div class="empty">'+
+      esc(e.message)+'</div></div>'; }
+    finally{ $('#ab').disabled=false; $('#ab').textContent='Ask'; }
+  };
+  $('#ab').onclick=go;
+  $('#q').addEventListener('keydown',e=>{
+    if((e.metaKey||e.ctrlKey)&&e.key==='Enter') go(); });
 }
 
 /* ---------- kpis ---------- */

@@ -116,7 +116,12 @@ class EmbeddingService:
         # Generate embedding for query
         query_embedding = await self.generate_embedding(query)
 
-        # Build search query
+        # Build search query.
+        # NOTE: this runs through SQLAlchemy text(), so it uses :named bind params
+        # and a dict — not asyncpg's $1 positional style. The query vector is bound
+        # as its pgvector literal form and cast, since it is not an ORM column here.
+        vec = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
+
         search_query = """
         SELECT
             de.content_chunk,
@@ -124,27 +129,28 @@ class EmbeddingService:
             uf.original_filename,
             de.chunk_index,
             de.chunk_metadata,
-            1 - (de.embedding <=> $1) as similarity_score
+            1 - (de.embedding <=> CAST(:vec AS vector)) AS similarity_score
         FROM document_embeddings de
         JOIN uploaded_files uf ON de.file_id = uf.id
-        WHERE uf.organization_id = $2
+        WHERE uf.organization_id = :org_id
         """
 
-        params = [query_embedding, organization_id]
-        param_count = 2
+        params = {
+            "vec": vec,
+            "org_id": organization_id,
+            "threshold": similarity_threshold,
+            "limit": limit,
+        }
 
         if file_ids:
-            search_query += f" AND de.file_id = ANY(${param_count + 1})"
-            params.append(file_ids)
-            param_count += 1
+            search_query += " AND de.file_id = ANY(:file_ids)"
+            params["file_ids"] = list(file_ids)
 
-        search_query += f"""
-        AND 1 - (de.embedding <=> $1) > ${param_count + 1}
+        search_query += """
+        AND 1 - (de.embedding <=> CAST(:vec AS vector)) > :threshold
         ORDER BY similarity_score DESC
-        LIMIT ${param_count + 2}
+        LIMIT :limit
         """
-
-        params.extend([similarity_threshold, limit])
 
         # Execute search
         result = await db.execute(sql_text(search_query), params)

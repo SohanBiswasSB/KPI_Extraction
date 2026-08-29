@@ -2,6 +2,9 @@
 import os
 from typing import List, Optional
 
+import openai
+from pydantic import BaseModel
+
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse as FastAPIFileResponse
 from sqlalchemy import select
@@ -212,6 +215,87 @@ async def reprocess_file(
         raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}") from e
 
 
+class AskRequest(BaseModel):
+    """A natural-language question asked against uploaded documents."""
+
+    question: str
+    organization_id: int
+    file_ids: Optional[List[int]] = None
+    top_k: int = 5
+    similarity_threshold: float = 0.05
+
+
+class AskResponse(BaseModel):
+    """An LLM answer grounded in retrieved document chunks."""
+
+    answer: str
+    sources: List[DocumentSearchResult] = []
+
+
+@router.post("/ask", response_model=AskResponse)
+async def ask_documents(
+    body: AskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Answer a question using retrieval over document embeddings (RAG).
+
+    Retrieves the most similar stored chunks, then asks the configured LLM to
+    answer using only that context. Returns the answer plus its sources so the
+    caller can see exactly what the answer was grounded in.
+    """
+    embedding_service = EmbeddingService()
+    try:
+        chunks = await embedding_service.search_documents(
+            query=body.question,
+            organization_id=body.organization_id,
+            file_ids=body.file_ids,
+            limit=body.top_k,
+            similarity_threshold=body.similarity_threshold,
+            db=db,
+        )
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Retrieval failed: {err}") from err
+
+    if not chunks:
+        return AskResponse(
+            answer="No relevant content found. Upload a document first, or "
+                   "lower the similarity threshold.",
+            sources=[],
+        )
+
+    context = "\n\n---\n\n".join(
+        f"[source: {c['filename']}]\n{c['content_chunk']}" for c in chunks
+    )
+    client = openai.OpenAI(
+        base_url=settings.LLM_BASE_URL,
+        api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "local",
+    )
+    try:
+        completion = client.chat.completions.create(
+            model=settings.LLM_MODEL,
+            temperature=0.1,
+            # Generous budget: the configured model is a reasoning model and
+            # spends 1.5-2k tokens thinking before it emits an answer.
+            max_tokens=4000,
+            messages=[
+                {"role": "system", "content":
+                 "Answer strictly from the provided context. If the context does "
+                 "not contain the answer, say so plainly. Be concise."},
+                {"role": "user", "content":
+                 f"Context:\n{context}\n\nQuestion: {body.question}"},
+            ],
+        )
+        answer = (completion.choices[0].message.content or "").strip()
+        if not answer:
+            answer = ("The model returned no answer (its reasoning consumed the "
+                      "whole token budget). Try a narrower question.")
+    except Exception as err:
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {err}") from err
+
+    return AskResponse(answer=answer, sources=chunks)
+
+
 @router.post("/search", response_model=List[DocumentSearchResult])
 async def search_documents(
     search_query: DocumentSearchQuery,
@@ -222,12 +306,17 @@ async def search_documents(
     embedding_service = EmbeddingService()
 
     try:
-        # Perform semantic search
-        results = await embedding_service.semantic_search(
-            search_query.query,
-            search_query.organization_id,
-            search_query.limit or 10,
-            db
+        # Perform semantic search over document chunks.
+        # NOTE: call search_documents directly with keyword args — semantic_search()
+        # takes (query, organization_id, search_type, limit, db) and returns a dict,
+        # which does not match this route's List[DocumentSearchResult] response model.
+        results = await embedding_service.search_documents(
+            query=search_query.query,
+            organization_id=search_query.organization_id,
+            file_ids=search_query.file_ids,
+            limit=search_query.limit or 10,
+            similarity_threshold=search_query.similarity_threshold,
+            db=db,
         )
 
         return results
