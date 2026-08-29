@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.file import (
-    UploadedFile, FileStatus, ExtractedTable, ExtractedKPI,
+    UploadedFile, FileStatus, ExtractedTable, ExtractedKPI, DocumentEmbedding,
 )
 from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
@@ -124,6 +124,15 @@ class FileService:
                 logger.warning("KPI extraction skipped for file %s: %s", file_id, exc)
 
             # 3. Best-effort embeddings for semantic search.
+            # Clear prior embeddings first: without this, every reprocess appends
+            # a fresh copy of every chunk and the same text wins several of the
+            # top-k slots in semantic search.
+            stale_embeddings = await db.execute(
+                select(DocumentEmbedding).where(DocumentEmbedding.file_id == file_id)
+            )
+            for stale in stale_embeddings.scalars().all():
+                await db.delete(stale)
+
             try:
                 embeddings = await self.embedding_service.create_document_embeddings(
                     file_id, text_view, db

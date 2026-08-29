@@ -2,12 +2,13 @@
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Enum
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from pydantic import BaseModel
 
 from app.core.database import Base
+from app.models.user import UserRole
 
 
 class Organization(Base):
@@ -36,7 +37,13 @@ class UserOrganization(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
-    role = Column(String(50), default="viewer")  # Using string instead of enum for flexibility
+    # The DB column is the user_role ENUM (see init.sql), so this must be an
+    # Enum column too — a plain String sends VARCHAR and Postgres rejects it.
+    role = Column(
+        Enum(UserRole, name="user_role",
+             values_callable=lambda e: [m.value for m in e]),
+        default=UserRole.VIEWER,
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

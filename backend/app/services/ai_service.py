@@ -103,7 +103,7 @@ class AIService:
             5. Context (surrounding text)
 
             Text to analyze:
-            {text[:4000]}  # Limit text length for API
+            {text[:4000]}
 
             Return the results as a JSON array with the following structure:
             [

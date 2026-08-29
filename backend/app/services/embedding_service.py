@@ -70,9 +70,18 @@ class EmbeddingService:
         chunks = await self.chunk_text(text)
         embeddings = []
 
+        # Embed in batches rather than one HTTP round-trip per chunk. A large
+        # PDF produces hundreds of chunks; sequentially that is hundreds of
+        # sequential requests and dominates upload time.
+        batch_size = 64
+        vectors: List[List[float]] = []
+        for start in range(0, len(chunks), batch_size):
+            vectors.extend(
+                await self.batch_create_embeddings(chunks[start:start + batch_size])
+            )
+
         for i, chunk in enumerate(chunks):
-            # Generate embedding
-            embedding_vector = await self.generate_embedding(chunk)
+            embedding_vector = vectors[i]
 
             # Create document embedding record
             doc_embedding = DocumentEmbedding(
