@@ -160,27 +160,41 @@ class AIService:
     async def extract_kpis_from_text(
         self, text: str, file_id: int, db: AsyncSession
     ) -> List[ExtractedKPI]:
-        """Extract KPIs from text using AI and pattern matching."""
-        extracted_kpis = []
+        """Extract KPIs from text using AI, scanning the WHOLE document.
 
-        # Use OpenAI to identify and extract KPIs
-        try:
+        The previous implementation sent only ``text[:4000]`` — on a 314k-char
+        10-K that is 1.3% of the document, and it happens to be the SEC cover
+        page. The model saw no figures at all and answered from memory, so the
+        stored "KPIs" were confident fabrications. This walks the document in
+        windows, extracts from each, and merges the results by name.
+        """
+        extracted_kpis: List[ExtractedKPI] = []
+        seen: set = set()
+        any_success = False
+
+        windows = _split_windows(text, settings.KPI_WINDOW_CHARS,
+                                 settings.KPI_MAX_WINDOWS)
+        logger.info("KPI extraction: %d window(s) over %d chars", len(windows), len(text))
+
+        for idx, window in enumerate(windows):
             prompt = f"""
             Extract business KPIs (Key Performance Indicators) from the text.
 
             Rules:
             - Return ONLY a JSON array. No prose before or after.
-            - At most 30 KPIs, the most significant ones.
+            - Use ONLY numbers that appear in the text below. Never recall
+              figures from memory. If the text has no metrics, return [].
+            - At most 20 KPIs from this excerpt, the most significant ones.
             - kpi_value must be a plain number (no commas, currency symbols or
               percent signs) or null. Put the unit in kpi_unit.
             - If the table states a scale such as "(In millions)", reflect it in
               kpi_unit, e.g. "USD millions" or "%".
-            - Include the period in kpi_name when the column identifies one,
+            - Include the period in kpi_name when a column identifies one,
               e.g. "Total net sales (FY2025)".
             - Keep every field short. Do NOT echo the source text back.
 
             Text to analyze:
-            {text[:4000]}
+            {window}
 
             JSON array format:
             [
@@ -192,40 +206,46 @@ class AIService:
                 }}
             ]
             """
-
-            response = self.client.chat.completions.create(
-                model=settings.LLM_MODEL,
-                messages=_with_think_prefill([{"role": "user", "content": prompt}]),
-                temperature=0.1,
-                max_tokens=4000
-            )
-
-            content = response.choices[0].message.content
             try:
-                kpis_data = _parse_json_response(content)
-                for kpi_data in kpis_data:
-                    extracted_kpi = ExtractedKPI(
-                        file_id=file_id,
-                        kpi_name=kpi_data.get("kpi_name", ""),
-                        kpi_value=kpi_data.get("kpi_value"),
-                        kpi_unit=kpi_data.get("kpi_unit"),
-                        confidence_score=kpi_data.get("confidence_score", 0.5),
-                        extraction_method="ai",
-                        # No longer requested from the model — echoing the source
-                        # for every KPI overflowed max_tokens and truncated the
-                        # JSON array mid-item. Record a compact provenance note.
-                        raw_text=str(kpi_data.get("raw_text") or "")[:500],
-                        context=str(kpi_data.get("context") or "")[:500]
-                    )
-                    extracted_kpis.append(extracted_kpi)
+                response = self.client.chat.completions.create(
+                    model=settings.LLM_MODEL,
+                    messages=_with_think_prefill([{"role": "user", "content": prompt}]),
+                    temperature=0.1,
+                    max_tokens=2000,
+                )
+                kpis_data = _parse_json_response(response.choices[0].message.content)
+                any_success = True
+            except Exception as err:
+                logger.warning("KPI window %d/%d failed: %s", idx + 1, len(windows), err)
+                continue
 
-            except json.JSONDecodeError:
-                # Fallback to pattern matching if AI parsing fails
-                extracted_kpis.extend(self._extract_kpis_by_pattern(text, file_id))
+            if not isinstance(kpis_data, list):
+                continue
 
-        except Exception as err:
-            logger.warning("AI extraction failed: %s", err)
-            # Fallback to pattern matching
+            for kpi_data in kpis_data:
+                if not isinstance(kpi_data, dict):
+                    continue
+                name = str(kpi_data.get("kpi_name") or "").strip()
+                if not name:
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                extracted_kpis.append(ExtractedKPI(
+                    file_id=file_id,
+                    kpi_name=name[:255],
+                    kpi_value=_coerce_number(kpi_data.get("kpi_value")),
+                    kpi_unit=(str(kpi_data.get("kpi_unit"))[:50]
+                              if kpi_data.get("kpi_unit") else None),
+                    confidence_score=kpi_data.get("confidence_score", 0.5),
+                    extraction_method="ai",
+                    raw_text="",
+                    context=f"window {idx + 1}/{len(windows)}",
+                ))
+
+        if not any_success:
+            logger.warning("All AI windows failed; falling back to pattern matching")
             extracted_kpis.extend(self._extract_kpis_by_pattern(text, file_id))
 
         return extracted_kpis
