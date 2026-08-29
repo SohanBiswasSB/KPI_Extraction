@@ -182,7 +182,11 @@ class EmbeddingService:
         # Generate embedding for query
         query_embedding = await self.generate_embedding(query)
 
-        # Build search query
+        # Build search query.
+        # Same binding rules as search_documents(): SQLAlchemy text() needs
+        # :named params and a dict, and the query vector must be cast to vector.
+        vec = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
+
         search_query = """
         SELECT
             k.name,
@@ -192,19 +196,24 @@ class EmbeddingService:
             k.current_value,
             k.target_value,
             ke.kpi_id,
-            1 - (ke.embedding <=> $1) as similarity_score
+            1 - (ke.embedding <=> CAST(:vec AS vector)) AS similarity_score
         FROM kpi_embeddings ke
         JOIN kpis k ON ke.kpi_id = k.id
-        WHERE k.organization_id = $2
-        AND 1 - (ke.embedding <=> $1) > $3
+        WHERE k.organization_id = :org_id
+        AND 1 - (ke.embedding <=> CAST(:vec AS vector)) > :threshold
         ORDER BY similarity_score DESC
-        LIMIT $4
+        LIMIT :limit
         """
 
         # Execute search
         result = await db.execute(
             sql_text(search_query),
-            [query_embedding, organization_id, similarity_threshold, limit]
+            {
+                "vec": vec,
+                "org_id": organization_id,
+                "threshold": similarity_threshold,
+                "limit": limit,
+            },
         )
         rows = result.fetchall()
 
@@ -313,9 +322,9 @@ class EmbeddingService:
         SELECT COUNT(*) as count
         FROM document_embeddings de
         JOIN uploaded_files uf ON de.file_id = uf.id
-        WHERE uf.organization_id = $1
+        WHERE uf.organization_id = :org_id
         """
-        result = await db.execute(sql_text(doc_count_query), [organization_id])
+        result = await db.execute(sql_text(doc_count_query), {"org_id": organization_id})
         doc_count = result.scalar()
 
         # Count KPI embeddings
@@ -323,9 +332,9 @@ class EmbeddingService:
         SELECT COUNT(*) as count
         FROM kpi_embeddings ke
         JOIN kpis k ON ke.kpi_id = k.id
-        WHERE k.organization_id = $1
+        WHERE k.organization_id = :org_id
         """
-        result = await db.execute(sql_text(kpi_count_query), [organization_id])
+        result = await db.execute(sql_text(kpi_count_query), {"org_id": organization_id})
         kpi_count = result.scalar()
 
         return {
@@ -344,7 +353,12 @@ class EmbeddingService:
     ) -> List[Dict[str, Any]]:
         """Search for KPIs similar to the query embedding using vector similarity."""
 
-        # Build search query
+        # Build search query.
+        # NOTE: only columns that actually exist are selected — kpi_embeddings has
+        # no `content`, and kpis has no frequency/calculation_method/data_source.
+        # Binding follows SQLAlchemy text() rules (:named + dict), not asyncpg $N.
+        vec = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
+
         search_query = """
         SELECT
             k.id,
@@ -354,32 +368,25 @@ class EmbeddingService:
             k.unit,
             k.target_value,
             k.current_value,
-            k.frequency,
-            k.calculation_method,
-            k.data_source,
-            ke.content,
-            1 - (ke.embedding <=> $1) as similarity_score
+            1 - (ke.embedding <=> CAST(:vec AS vector)) AS similarity_score
         FROM kpi_embeddings ke
         JOIN kpis k ON ke.kpi_id = k.id
-        WHERE 1 - (ke.embedding <=> $1) >= $2
+        WHERE 1 - (ke.embedding <=> CAST(:vec AS vector)) >= :threshold
         """
 
-        params = [query_embedding, similarity_threshold]
-        param_count = 2
+        params = {"vec": vec, "threshold": similarity_threshold}
 
         # Add organization filter if provided
         if organization_id:
-            param_count += 1
-            search_query += f" AND k.organization_id = ${param_count}"
-            params.append(organization_id)
+            search_query += " AND k.organization_id = :org_id"
+            params["org_id"] = organization_id
 
         # Add ordering and limit
         search_query += " ORDER BY similarity_score DESC"
 
         if limit:
-            param_count += 1
-            search_query += f" LIMIT ${param_count}"
-            params.append(limit)
+            search_query += " LIMIT :limit"
+            params["limit"] = limit
 
         # Execute query
         result = await db.execute(sql_text(search_query), params)
@@ -396,10 +403,6 @@ class EmbeddingService:
                 "unit": row.unit,
                 "target_value": float(row.target_value) if row.target_value else None,
                 "current_value": float(row.current_value) if row.current_value else None,
-                "frequency": row.frequency,
-                "calculation_method": row.calculation_method,
-                "data_source": row.data_source,
-                "matched_content": row.content,
                 "similarity_score": float(row.similarity_score)
             }
             kpis.append(kpi_data)

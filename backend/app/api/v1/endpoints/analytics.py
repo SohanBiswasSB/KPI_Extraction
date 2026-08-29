@@ -93,7 +93,7 @@ async def get_analytics_overview(
             selectinload(KPIHistory.kpi)
         ).where(
             KPI.organization_id == organization_id
-        ).join(KPI).order_by(KPIHistory.created_at.desc()).limit(10)
+        ).join(KPI).order_by(KPIHistory.recorded_at.desc()).limit(10)
     )
     recent_updates = result.scalars().all()
 
@@ -164,7 +164,7 @@ async def analyze_kpi_trends(
             selectinload(KPIHistory.kpi)
         ).where(
             KPIHistory.kpi_id.in_(request.kpi_ids)
-        ).order_by(KPIHistory.created_at)
+        ).order_by(KPIHistory.recorded_at)
     )
     history_records = result.scalars().all()
 
@@ -225,10 +225,13 @@ async def natural_language_query(
     )
     kpis = result.scalars().all()
 
-    # Use AI service to answer the query
+    # Use AI service to answer the query.
+    # NOTE: the service signature is (query, organization_id, db) — it re-fetches
+    # the KPIs itself. Passing `kpis`/`context` positionally put a list into
+    # organization_id and None into db.
     ai_service = AIService()
     answer = await ai_service.answer_natural_language_query(
-        query.query, kpis, query.context
+        query.query, query.organization_id, db
     )
 
     return {

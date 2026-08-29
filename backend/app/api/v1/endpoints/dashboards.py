@@ -31,9 +31,9 @@ async def get_dashboards(
     """Get list of dashboards accessible to the current user."""
     # Build query based on user's access
     query = select(Dashboard).options(
-        selectinload(Dashboard.creator),
+        selectinload(Dashboard.created_by_user),
         selectinload(Dashboard.organization),
-        selectinload(Dashboard.shares).selectinload(DashboardShare.user)
+        selectinload(Dashboard.shares).selectinload(DashboardShare.shared_with_user)
     )
 
     # Filter by organization if specified
@@ -76,9 +76,9 @@ async def get_dashboard(
     """Get a specific dashboard by ID."""
     result = await db.execute(
         select(Dashboard).options(
-            selectinload(Dashboard.creator),
+            selectinload(Dashboard.created_by_user),
             selectinload(Dashboard.organization),
-            selectinload(Dashboard.shares).selectinload(DashboardShare.user),
+            selectinload(Dashboard.shares).selectinload(DashboardShare.shared_with_user),
             selectinload(Dashboard.kpis)
         ).where(Dashboard.id == dashboard_id)
     )
@@ -339,7 +339,7 @@ async def get_dashboard_shares(
 
     result = await db.execute(
         select(DashboardShare).options(
-            selectinload(DashboardShare.user)
+            selectinload(DashboardShare.shared_with_user)
         ).where(DashboardShare.dashboard_id == dashboard_id)
     )
     shares = result.scalars().all()

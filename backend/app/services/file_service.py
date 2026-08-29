@@ -22,7 +22,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.file import UploadedFile, FileStatus, ExtractedTable
+from app.models.file import (
+    UploadedFile, FileStatus, ExtractedTable, ExtractedKPI,
+)
 from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
 from app.services.table_extraction import (
@@ -104,6 +106,14 @@ class FileService:
 
             # 2. Best-effort KPI extraction from a flattened text view of the tables.
             text_view = self._tables_to_text(tables)
+            # Clear any KPIs from a previous run so reprocessing replaces rather
+            # than appends (mirrors _extract_and_store_tables).
+            previous = await db.execute(
+                select(ExtractedKPI).where(ExtractedKPI.file_id == file_id)
+            )
+            for stale in previous.scalars().all():
+                await db.delete(stale)
+
             kpi_count = 0
             try:
                 kpis = await self.ai_service.extract_kpis_from_text(text_view, file_id, db)

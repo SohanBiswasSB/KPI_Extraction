@@ -18,6 +18,36 @@ from app.services.embedding_service import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
+
+
+def _parse_json_response(content: Optional[str]) -> Any:
+    """Parse a JSON payload out of an LLM reply.
+
+    Models routinely wrap JSON in ```json fences or add a sentence around it,
+    and reasoning models can return an empty string when their thinking budget
+    is exhausted. Strip fences, then fall back to the outermost {...} / [...]
+    span. Raises ValueError if nothing parseable is found.
+    """
+    if not content or not content.strip():
+        raise ValueError("empty response from model")
+
+    text = _FENCE_RE.sub("", content.strip())
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start, end = text.find(opener), text.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except json.JSONDecodeError:
+                continue
+    raise ValueError(f"no JSON found in model response: {content[:200]!r}")
+
+
 
 class AIService:
     """Provide AI-backed KPI extraction, analysis, and search operations."""
@@ -99,7 +129,7 @@ class AIService:
 
             content = response.choices[0].message.content
             try:
-                kpis_data = json.loads(content)
+                kpis_data = _parse_json_response(content)
                 for kpi_data in kpis_data:
                     extracted_kpi = ExtractedKPI(
                         file_id=file_id,
@@ -128,22 +158,48 @@ class AIService:
         """Extract KPIs using regex patterns as fallback."""
         extracted_kpis = []
 
-        # Common KPI patterns with regex
+        # Common KPI patterns with regex.
+        # Each entry is (pattern, name_group, value_group) — the groups are NOT in
+        # the same order for every pattern, so the indices must travel with the
+        # pattern rather than being assumed to be (1, 2).
+        # (pattern, name_group, value_group, require_known_term)
         patterns = [
-            # Key: Value pattern
-            r'(\w+)\s*[:=]\s*([\d,]+\.?\d*)',
-            # Value + Unit + KPI type
-            r'([\d,]+\.?\d*)\s*([%$€£¥]|\w+)\s*(revenue|profit|margin|cost)',
+            # Key: Value — matches any label, so it must name a known metric,
+            # otherwise every "September: 1" in the document becomes a KPI.
+            (r'([A-Za-z][A-Za-z \-]{2,40})\s*[:=]\s*([\d,]+\.?\d*)', 1, 2, True),
+            # Value + Unit + KPI type  -> name is group 3, value is group 1
+            (r'([\d,]+\.?\d*)\s*([%$€£¥]|\w+)\s*(revenue|profit|margin|cost)',
+             3, 1, False),
             # KPI type: Value
-            r'(revenue|profit|margin|cost|efficiency|productivity)\s*[:=]\s*([\d,]+\.?\d*)',
+            (r'(revenue|profit|margin|cost|efficiency|productivity)'
+             r'\s*[:=]\s*([\d,]+\.?\d*)', 1, 2, False),
         ]
 
-        for pattern in patterns:
+        # Only keep names that look like a real metric: a known KPI term, or a
+        # clean multi-character word. Without this, "September: 1" and stray
+        # PDF line-break fragments ("mber", "ue", "that") become bogus KPIs.
+        known_terms = {t for terms in self.kpi_patterns.values() for t in terms}
+        stopwords = {
+            "that", "this", "the", "and", "for", "with", "from", "page", "note",
+            "total", "item", "line", "date", "time", "name", "type", "value",
+        }
+
+        def _plausible(name: str, require_known: bool) -> bool:
+            low = name.lower().strip()
+            if any(term in low for term in known_terms):
+                return True
+            if require_known:
+                return False
+            return len(low) >= 4 and low.isalpha() and low not in stopwords
+
+        for pattern, name_grp, value_grp, require_known in patterns:
             matches = re.finditer(pattern, text, re.IGNORECASE)
             for match in matches:
-                if len(match.groups()) >= 2:
-                    kpi_name = match.group(1).strip()
-                    value_str = match.group(2).replace(',', '')
+                if len(match.groups()) >= max(name_grp, value_grp):
+                    kpi_name = match.group(name_grp).strip()
+                    if not _plausible(kpi_name, require_known):
+                        continue
+                    value_str = match.group(value_grp).replace(',', '')
 
                     try:
                         value = float(value_str)
@@ -252,7 +308,7 @@ class AIService:
             )
 
             content = response.choices[0].message.content
-            analysis = json.loads(content)
+            analysis = _parse_json_response(content)
 
             return {
                 "kpi_id": kpi_id,
@@ -354,7 +410,7 @@ class AIService:
             )
 
             content = response.choices[0].message.content
-            recommendations = json.loads(content)
+            recommendations = _parse_json_response(content)
 
             return [recommendations]
 
@@ -440,7 +496,7 @@ class AIService:
             )
 
             content = response.choices[0].message.content
-            answer = json.loads(content)
+            answer = _parse_json_response(content)
 
             return answer
 
@@ -501,7 +557,7 @@ class AIService:
                 temperature=0.3,
                 max_tokens=4000,
             )
-            return json.loads(response.choices[0].message.content)
+            return _parse_json_response(response.choices[0].message.content)
 
         except Exception as err:
             logger.warning("Report generation failed: %s", err)
@@ -668,7 +724,7 @@ class AIService:
             )
 
             content = response.choices[0].message.content
-            insights = json.loads(content)
+            insights = _parse_json_response(content)
 
             return insights
 
