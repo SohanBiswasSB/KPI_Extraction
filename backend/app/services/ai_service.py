@@ -44,6 +44,43 @@ def _with_think_prefill(
     return [*messages, tail]
 
 
+def _split_windows(text: str, size: int, max_windows: int) -> List[str]:
+    """Cut the document into model-sized windows, preferring table boundaries."""
+    if not text:
+        return []
+    blocks = text.split("\n[page ")
+    blocks = [blocks[0]] + [f"[page {b}" for b in blocks[1:]]
+
+    windows: List[str] = []
+    current = ""
+    for block in blocks:
+        if current and len(current) + len(block) > size:
+            windows.append(current)
+            current = block
+        else:
+            current = f"{current}\n{block}" if current else block
+        # A single table larger than one window is split on raw length.
+        while len(current) > size:
+            windows.append(current[:size])
+            current = current[size:]
+    if current.strip():
+        windows.append(current)
+    return windows[:max_windows]
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    """Turn a model-supplied value into a float, or None if it is not numeric."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    cleaned = re.sub(r"[,$%\s]", "", str(value)).replace("(", "-").replace(")", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def _parse_json_response(content: Optional[str]) -> Any:
     """Parse a JSON payload out of an LLM reply.
 
