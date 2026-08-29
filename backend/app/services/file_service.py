@@ -134,9 +134,18 @@ class FileService:
                 await db.delete(stale)
 
             kpi_count = 0
-            await self._set_stage(record, db, "extracting_kpis")
+            await self._set_stage(record, db, "extracting_kpis",
+                                  kpi_windows_done=0, kpi_windows_total=None)
+
+            async def _kpi_progress(done: int, total: int) -> None:
+                await self._set_stage(record, db, "extracting_kpis",
+                                      kpi_windows_done=done,
+                                      kpi_windows_total=total)
+
             try:
-                kpis = await self.ai_service.extract_kpis_from_text(text_view, file_id, db)
+                kpis = await self.ai_service.extract_kpis_from_text(
+                    text_view, file_id, db, progress_cb=_kpi_progress
+                )
                 for kpi in kpis:
                     db.add(kpi)
                 kpi_count = len(kpis)

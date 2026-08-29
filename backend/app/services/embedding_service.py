@@ -1,5 +1,6 @@
 """Embedding generation and vector-similarity search for documents and KPIs."""
 
+import asyncio
 import logging
 import re
 from typing import List, Dict, Any, Optional
@@ -31,9 +32,13 @@ class EmbeddingService:
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a text using OpenAI."""
         try:
-            response = self.client.embeddings.create(
+            # to_thread: the openai client is synchronous, and calling it
+            # directly from an async handler blocks uvicorn's event loop, so
+            # the whole API stops answering while a document is processed.
+            response = await asyncio.to_thread(
+                self.client.embeddings.create,
                 model=self.embedding_model,
-                input=text
+                input=text,
             )
             return response.data[0].embedding
         except Exception as err:
@@ -559,9 +564,10 @@ class EmbeddingService:
     async def batch_create_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Create embeddings for multiple texts in batch."""
         try:
-            response = self.client.embeddings.create(
+            response = await asyncio.to_thread(
+                self.client.embeddings.create,
                 model=self.embedding_model,
-                input=texts
+                input=texts,
             )
             return [data.embedding for data in response.data]
         except Exception as err:

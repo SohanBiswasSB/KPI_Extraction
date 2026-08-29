@@ -1,5 +1,6 @@
 """AI-powered KPI extraction, trend analysis, insights, and semantic search."""
 
+import asyncio
 import json
 import logging
 import re
@@ -97,6 +98,54 @@ def _split_windows(text: str, size: int, max_windows: int) -> List[str]:
     if current.strip():
         windows.append(current)
     return windows[:max_windows]
+
+
+def _kpi_prompt(window: str) -> str:
+    """Build the KPI-extraction prompt for one window of document text."""
+    return f"""
+    Extract business KPIs (Key Performance Indicators) from the text.
+
+    Rules:
+    - Return ONLY a JSON array of OBJECTS. No prose, no arrays-of-arrays.
+    - Use ONLY numbers that appear verbatim in the text below. Never
+      recall figures from memory. If the text has no metrics, return [].
+    - At most 20 KPIs from this excerpt, the most significant ones.
+    - Copy the number EXACTLY as printed, minus commas. Do not rescale,
+      convert, sum or compute anything. 7.46 stays 7.46, never 14.78.
+    - Negative numbers are often shown in parentheses: (321) -> -321.
+
+    UNITS AND SCALE - read the table's own header before deciding:
+    - Statements usually declare a scale, e.g. "(In millions)" or
+      "(In thousands)". That scale applies to the money rows in that
+      table, so kpi_unit becomes "USD millions" / "USD thousands".
+    - A header can declare DIFFERENT scales for different rows, e.g.
+      "net income in millions and shares in thousands". Match each row
+      to its own scale.
+    - Per-share amounts are literal dollars, NOT scaled:
+      kpi_unit = "USD per share".
+    - Share/unit counts are not money: kpi_unit = "shares thousands"
+      (or "shares") - never "USD".
+    - Percentages: kpi_unit = "%" and strip the % sign from the value.
+    - Ratios or plain counts with no unit: kpi_unit = null.
+    - Never put a scale word inside kpi_value; it belongs in kpi_unit.
+
+    - Include the period in kpi_name when a column identifies one,
+      e.g. "Total net sales (FY2025)".
+    - Keep every field short. Do NOT echo the source text back.
+
+    Text to analyze:
+    {window}
+
+    JSON array format:
+    [
+        {{
+            "kpi_name": "string",
+            "kpi_value": 0,
+            "kpi_unit": "string or null",
+            "confidence_score": 0.9
+        }}
+    ]
+    """
 
 
 def _as_kpi_dict(item: Any) -> Optional[Dict[str, Any]]:
@@ -241,7 +290,7 @@ class AIService:
         }
 
     async def extract_kpis_from_text(
-        self, text: str, file_id: int, db: AsyncSession
+        self, text: str, file_id: int, db: AsyncSession, progress_cb=None,
     ) -> List[ExtractedKPI]:
         """Extract KPIs from text using AI, scanning the WHOLE document.
 
@@ -278,64 +327,54 @@ class AIService:
                 sum(len(w) for w in needed[settings.KPI_MAX_WINDOWS:]),
             )
 
-        for idx, window in enumerate(windows):
-            prompt = f"""
-            Extract business KPIs (Key Performance Indicators) from the text.
+        async def _one_window(idx: int, window: str):
+            """Run a single window and return its parsed rows (or None on failure)."""
+            prompt = _kpi_prompt(window)
+            async with sem:
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.chat.completions.create,
+                        model=settings.LLM_MODEL,
+                        messages=_with_think_prefill(
+                            [{"role": "user", "content": prompt}]
+                        ),
+                        temperature=0.1,
+                        max_tokens=2000,
+                    )
+                    return _parse_json_response(response.choices[0].message.content)
+                except Exception as err:
+                    logger.warning(
+                        "KPI window %d/%d failed: %s", idx + 1, len(windows), err
+                    )
+                    return None
 
-            Rules:
-            - Return ONLY a JSON array of OBJECTS. No prose, no arrays-of-arrays.
-            - Use ONLY numbers that appear verbatim in the text below. Never
-              recall figures from memory. If the text has no metrics, return [].
-            - At most 20 KPIs from this excerpt, the most significant ones.
-            - Copy the number EXACTLY as printed, minus commas. Do not rescale,
-              convert, sum or compute anything. 7.46 stays 7.46, never 14.78.
-            - Negative numbers are often shown in parentheses: (321) -> -321.
+        # LM Studio serves several requests at once (its "Parallel" setting), and
+        # prompt ingestion dominates the cost of each window. Running them
+        # concurrently cuts wall-clock roughly by the parallel factor; the
+        # semaphore keeps us from swamping the server.
+        sem = asyncio.Semaphore(settings.KPI_CONCURRENCY)
+        done_count = 0
 
-            UNITS AND SCALE - read the table's own header before deciding:
-            - Statements usually declare a scale, e.g. "(In millions)" or
-              "(In thousands)". That scale applies to the money rows in that
-              table, so kpi_unit becomes "USD millions" / "USD thousands".
-            - A header can declare DIFFERENT scales for different rows, e.g.
-              "net income in millions and shares in thousands". Match each row
-              to its own scale.
-            - Per-share amounts are literal dollars, NOT scaled:
-              kpi_unit = "USD per share".
-            - Share/unit counts are not money: kpi_unit = "shares thousands"
-              (or "shares") - never "USD".
-            - Percentages: kpi_unit = "%" and strip the % sign from the value.
-            - Ratios or plain counts with no unit: kpi_unit = null.
-            - Never put a scale word inside kpi_value; it belongs in kpi_unit.
+        async def _tracked(idx: int, window: str):
+            nonlocal done_count
+            out = await _one_window(idx, window)
+            done_count += 1
+            if progress_cb is not None:
+                try:
+                    await progress_cb(done_count, len(windows))
+                except Exception:  # progress reporting must never break work
+                    pass
+            return out
 
-            - Include the period in kpi_name when a column identifies one,
-              e.g. "Total net sales (FY2025)".
-            - Keep every field short. Do NOT echo the source text back.
+        results = await asyncio.gather(
+            *(_tracked(i, w) for i, w in enumerate(windows))
+        )
 
-            Text to analyze:
-            {window}
-
-            JSON array format:
-            [
-                {{
-                    "kpi_name": "string",
-                    "kpi_value": 0,
-                    "kpi_unit": "string or null",
-                    "confidence_score": 0.9
-                }}
-            ]
-            """
-            try:
-                response = self.client.chat.completions.create(
-                    model=settings.LLM_MODEL,
-                    messages=_with_think_prefill([{"role": "user", "content": prompt}]),
-                    temperature=0.1,
-                    max_tokens=2000,
-                )
-                kpis_data = _parse_json_response(response.choices[0].message.content)
-                any_success = True
-            except Exception as err:
-                logger.warning("KPI window %d/%d failed: %s", idx + 1, len(windows), err)
+        # Merge in window order so results are deterministic run to run.
+        for idx, kpis_data in enumerate(results):
+            if kpis_data is None:
                 continue
-
+            any_success = True
             if not isinstance(kpis_data, list):
                 continue
 
@@ -514,7 +553,8 @@ class AIService:
             }}
             """
 
-            response = self.client.chat.completions.create(
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
                 model=settings.LLM_MODEL,
                 messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.3,
@@ -616,7 +656,8 @@ class AIService:
             }}
             """
 
-            response = self.client.chat.completions.create(
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
                 model=settings.LLM_MODEL,
                 messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.3,
@@ -702,7 +743,8 @@ class AIService:
             }}
             """
 
-            response = self.client.chat.completions.create(
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
                 model=settings.LLM_MODEL,
                 messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.2,
@@ -765,7 +807,8 @@ class AIService:
             }}
             """
 
-            response = self.client.chat.completions.create(
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
                 model=settings.LLM_MODEL,
                 messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.3,
@@ -816,7 +859,8 @@ class AIService:
             kpi_text = " | ".join(kpi_text_parts)
 
             # Generate embedding using OpenAI
-            embedding_response = self.client.embeddings.create(
+            embedding_response = await asyncio.to_thread(
+                self.client.embeddings.create,
                 model=settings.LLM_EMBEDDING_MODEL,
                 input=kpi_text
             )
@@ -855,7 +899,8 @@ class AIService:
         """Search for KPIs similar to the given query using vector similarity."""
         try:
             # Generate embedding for the search query
-            embedding_response = self.client.embeddings.create(
+            embedding_response = await asyncio.to_thread(
+                self.client.embeddings.create,
                 model=settings.LLM_EMBEDDING_MODEL,
                 input=query
             )
@@ -930,7 +975,8 @@ class AIService:
             }}
             """
 
-            response = self.client.chat.completions.create(
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
                 model=settings.LLM_MODEL,
                 messages=_with_think_prefill([{"role": "user", "content": prompt}]),
                 temperature=0.2,

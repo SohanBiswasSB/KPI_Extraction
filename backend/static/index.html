@@ -101,6 +101,7 @@ pre{background:var(--chip);padding:11px;border-radius:8px;overflow-x:auto;font-s
 .bar{height:3px;background:var(--chip);border-radius:2px;overflow:hidden;margin-top:8px}
 .bar i{display:block;height:100%;width:30%;background:var(--accent);border-radius:2px;
   animation:slide 1.3s ease-in-out infinite}
+.bar.det i{animation:none;transition:width .4s ease}
 @keyframes slide{0%{margin-left:-30%}100%{margin-left:100%}}
 .stale{opacity:.55;transition:opacity .2s}
 
@@ -355,9 +356,33 @@ function statusChip(f){
   const s=f.status, st=(f.processing_metadata||{}).stage;
   if(s==='completed') return '<span class="chip ok">completed</span>';
   if(s==='failed')    return '<span class="chip err">failed</span>';
+  const pct=progressPct(f.processing_metadata);
   return '<span class="chip warn"><span class="spin"></span> '+
-    esc(STAGE_LABEL[st]||s||'pending')+'</span>';
+    esc(STAGE_LABEL[st]||s||'pending')+(pct!==null?' '+pct+'%':'')+'</span>';
 }
+/* Overall percent. Weights reflect measured wall-clock share of a large PDF:
+   table extraction is fast, KPI windows dominate, embeddings are batched. */
+const STAGE_WEIGHT={extracting_tables:[0,15],tables_done:[15,15],
+  extracting_kpis:[15,70],embedding:[85,13],done:[100,0]};
+function progressPct(meta){
+  const m=meta||{}, st=m.stage||'';
+  const w=STAGE_WEIGHT[st]; if(!w) return null;
+  const [base,span]=w;
+  if(st==='done') return 100;
+  let frac=0;
+  if(st==='extracting_kpis' && m.kpi_windows_total)
+    frac=Math.min(1,(m.kpi_windows_done||0)/m.kpi_windows_total);
+  return Math.round(base + span*frac);
+}
+function progressDetail(meta){
+  const m=meta||{};
+  if(m.stage==='extracting_kpis' && m.kpi_windows_total)
+    return 'window '+(m.kpi_windows_done||0)+' of '+m.kpi_windows_total;
+  if(m.stage==='embedding') return 'embedding chunks';
+  if(m.stage==='extracting_tables') return 'parsing pages';
+  return '';
+}
+
 /* real pipeline progress, driven by processing_metadata.stage from the backend */
 function stepper(meta){
   const cur=(meta||{}).stage||'';
@@ -379,7 +404,8 @@ function filesTable(list,acts){
     'Drop a PDF, XLSX, DOCX or CSV above to start. The pipeline will extract '+
     'tables, pull KPIs, and index the text for search.</div>';
   return '<div class="tw"><table><thead><tr><th>ID</th><th>Name</th><th>Type</th>'+
-    '<th>Size</th><th>Status</th><th>Tables</th><th>KPIs</th><th>Uploaded</th>'+
+    '<th>Size</th><th>Organization</th><th>Uploaded by</th><th>Status</th>'+
+    '<th>Tables</th><th>KPIs</th><th>Chunks</th><th>Uploaded</th>'+
     (A?'<th></th>':'')+'</tr></thead><tbody>'+
     list.map(f=>{
       const m=f.processing_metadata||{};
@@ -403,9 +429,19 @@ function filesTable(list,acts){
       '</td>':'')+'</tr>';
     }).join('')+'</tbody></table></div>'+
     (A?list.filter(f=>f.status!=='completed'&&f.status!=='failed').map(f=>
-      '<div class="act"><span class="spin"></span><div style="flex:1">'+
-      '<b>#'+f.id+' '+esc(f.original_filename||f.filename)+'</b>'+
-      stepper(f.processing_metadata)+'</div></div>').join(''):'');
+      (function(){
+        const m=f.processing_metadata||{}, pct=progressPct(m), det=progressDetail(m);
+        return '<div class="act"><span class="spin"></span><div style="flex:1">'+
+          '<div style="display:flex;align-items:baseline;gap:8px">'+
+          '<b>#'+f.id+' '+esc(f.original_filename||f.filename)+'</b>'+
+          (pct!==null?'<span class="chip live">'+pct+'%</span>':'')+
+          (det?'<span style="color:var(--muted);font-size:12px">'+esc(det)+
+            '</span>':'')+'</div>'+
+          stepper(m)+
+          (pct!==null?'<div class="bar det"><i style="width:'+pct+'%"></i></div>'
+                     :'<div class="bar"><i></i></div>')+
+          '</div></div>';
+      })()).join(''):'');
 }
 async function vFiles(){
   $('#view').innerHTML=head('Files','Upload a document and run extraction.');
