@@ -31,7 +31,11 @@ class UploadedFile(Base):
     file_path = Column(String(500), nullable=False)
     file_size = Column(Integer, nullable=False)
     file_type = Column(String(100), nullable=False)
-    status = Column(Enum(FileStatus), default=FileStatus.UPLOADED)
+    status = Column(
+        Enum(FileStatus, name="file_status",
+             values_callable=lambda e: [m.value for m in e]),
+        default=FileStatus.UPLOADED,
+    )
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     uploaded_by = Column(Integer, ForeignKey("users.id"))
     processing_metadata = Column(JSON)  # Store processing results and metadata

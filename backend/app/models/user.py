@@ -30,7 +30,11 @@ class User(Base):
     username = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255))
-    role = Column(Enum(UserRole), default=UserRole.VIEWER)
+    role = Column(
+        Enum(UserRole, name="user_role",
+             values_callable=lambda e: [m.value for m in e]),
+        default=UserRole.VIEWER,
+    )
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -39,7 +43,13 @@ class User(Base):
     dashboards = relationship("Dashboard", back_populates="created_by_user")
     kpis = relationship("KPI", back_populates="created_by_user")
     uploaded_files = relationship("UploadedFile", back_populates="uploaded_by_user")
-    shared_dashboards = relationship("DashboardShare", back_populates="shared_with_user")
+    # DashboardShare has two FKs to users (shared_with / shared_by), so the
+    # join column must be named explicitly on this side too.
+    shared_dashboards = relationship(
+        "DashboardShare",
+        back_populates="shared_with_user",
+        foreign_keys="DashboardShare.shared_with",
+    )
 
 
 # Pydantic models for API

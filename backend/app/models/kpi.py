@@ -30,7 +30,11 @@ class KPI(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
     description = Column(Text)
-    category = Column(Enum(KPICategory), default=KPICategory.OTHER)
+    category = Column(
+        Enum(KPICategory, name="kpi_category",
+             values_callable=lambda e: [m.value for m in e]),
+        default=KPICategory.OTHER,
+    )
     unit = Column(String(50))
     target_value = Column(Numeric(15, 2))
     current_value = Column(Numeric(15, 2))
