@@ -18,10 +18,11 @@ class EmbeddingService:
     """Generate embeddings and run semantic search over documents and KPIs."""
 
     def __init__(self):
-        # Local-first: OpenAI-compatible embeddings server (Ollama: `nomic-embed-text`).
+        # Local-first: OpenAI-compatible embeddings server
+        # (LM Studio: `text-embedding-nomic-embed-text-v1.5`, 768-dim).
         self.client = openai.OpenAI(
             base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "ollama",
+            api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "local",
         )
         self.embedding_model = settings.LLM_EMBEDDING_MODEL
         self.vector_dimension = settings.VECTOR_DIMENSION

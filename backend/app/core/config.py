@@ -23,19 +23,33 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
-    # LLM settings — local-first via an OpenAI-compatible server (Ollama/vLLM/LM Studio).
+    # LLM settings — local-first via an OpenAI-compatible server (LM Studio/Ollama/vLLM).
     # No API key required for local models; LLM_API_KEY is any non-empty placeholder.
     # Point LLM_BASE_URL at a hosted OpenAI endpoint instead to use cloud models.
-    LLM_BASE_URL: str = "http://localhost:11434/v1"   # Ollama default
-    LLM_API_KEY: Optional[str] = None                  # falls back to "ollama" if unset
-    LLM_MODEL: str = "qwen2.5:7b-instruct"             # text → KPI structuring
-    LLM_VISION_MODEL: str = "qwen2.5vl:7b"             # vision → tables from page images
-    LLM_EMBEDDING_MODEL: str = "nomic-embed-text"      # local embeddings (768-dim)
+    #
+    # --- Ollama defaults (disabled; not in use) -------------------------------
+    # LLM_BASE_URL: str = "http://localhost:11434/v1"  # Ollama default
+    # LLM_MODEL: str = "qwen2.5:7b-instruct"           # text → KPI structuring
+    # LLM_VISION_MODEL: str = "qwen2.5vl:7b"           # vision → tables from page images
+    # LLM_EMBEDDING_MODEL: str = "nomic-embed-text"    # local embeddings (768-dim)
+    # --------------------------------------------------------------------------
+    #
+    # Active: LM Studio's OpenAI-compatible server (default port 1234).
+    LLM_BASE_URL: str = "http://localhost:1234/v1"
+    LLM_API_KEY: Optional[str] = None                  # falls back to a placeholder if unset
+    LLM_MODEL: str = "google/gemma-4-26b-a4b-qat"
+    # Same multimodal model serves the vision path; only used when ENABLE_VLM is true.
+    # NOTE: gemma-4 is a *reasoning* model — it spends 1.5-2k tokens thinking before
+    # answering, so every max_tokens in ai_service.py must stay well above that.
+    LLM_VISION_MODEL: str = "google/gemma-4-26b-a4b-qat"
+    # EmbeddingGemma-300M: 768-dim, matches vector(768) in init.sql. Tiny (229MB),
+    # so it can stay resident alongside the 15.6GB chat model on a 24GB machine.
+    LLM_EMBEDDING_MODEL: str = "text-embedding-embeddinggemma-300m-qat"
 
     # Back-compat: legacy code/env may still reference these.
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "qwen2.5:7b-instruct"
-    OPENAI_EMBEDDING_MODEL: str = "nomic-embed-text"
+    OPENAI_MODEL: str = "google/gemma-4-26b-a4b-qat"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-embeddinggemma-300m-qat"
 
     # File upload settings
     UPLOAD_DIR: str = "uploads"

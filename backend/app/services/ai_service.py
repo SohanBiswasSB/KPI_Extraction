@@ -23,11 +23,11 @@ class AIService:
     """Provide AI-backed KPI extraction, analysis, and search operations."""
 
     def __init__(self):
-        # Local-first: talk to an OpenAI-compatible server (Ollama by default).
+        # Local-first: talk to an OpenAI-compatible server (LM Studio by default).
         # A non-empty key is required by the client even when the server ignores it.
         self.client = openai.OpenAI(
             base_url=settings.LLM_BASE_URL,
-            api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "ollama",
+            api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "local",
         )
         self.embedding_service = EmbeddingService()
 
@@ -94,7 +94,7 @@ class AIService:
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=1000
+                max_tokens=4000
             )
 
             content = response.choices[0].message.content
@@ -248,7 +248,7 @@ class AIService:
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=800
+                max_tokens=4000
             )
 
             content = response.choices[0].message.content
@@ -350,7 +350,7 @@ class AIService:
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=600
+                max_tokens=4000
             )
 
             content = response.choices[0].message.content
@@ -436,7 +436,7 @@ class AIService:
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=800
+                max_tokens=4000
             )
 
             content = response.choices[0].message.content
@@ -499,7 +499,7 @@ class AIService:
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1000,
+                max_tokens=4000,
             )
             return json.loads(response.choices[0].message.content)
 
@@ -664,7 +664,7 @@ class AIService:
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=1000
+                max_tokens=4000
             )
 
             content = response.choices[0].message.content

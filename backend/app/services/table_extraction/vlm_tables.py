@@ -55,7 +55,7 @@ def is_available() -> bool:
 
 
 def _client(base_url: str, api_key: Optional[str]):
-    return openai.OpenAI(base_url=base_url, api_key=api_key or "ollama")
+    return openai.OpenAI(base_url=base_url, api_key=api_key or "local")
 
 
 def _png_data_uri(img) -> str:
