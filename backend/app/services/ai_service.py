@@ -148,6 +148,29 @@ def _kpi_prompt(window: str) -> str:
     """
 
 
+def _value_in_text(value: Optional[float], text: str) -> bool:
+    """Is this number actually present in the text the model was shown?
+
+    The model sometimes reports a figure that never appears in its excerpt -
+    recalled from training data, or computed (a year-over-year delta). Both
+    read as confident and correct. Checking the digits against the source is a
+    deterministic guard that needs no model judgement.
+    """
+    if value is None:
+        return True  # nothing numeric to verify
+
+    digits = re.sub(r"[,\s]", "", text)
+    candidates = set()
+    if float(value).is_integer():
+        whole = str(int(value))
+        candidates.update({whole, f"{int(value):,}"})
+    else:
+        candidates.add(f"{value:g}")
+        candidates.add(f"{value:.2f}".rstrip("0").rstrip("."))
+    return any(c and (c in text or re.sub(r"[,\s]", "", c) in digits)
+               for c in candidates)
+
+
 def _as_kpi_dict(item: Any) -> Optional[Dict[str, Any]]:
     """Normalise one model-returned KPI into a dict.
 
@@ -303,6 +326,7 @@ class AIService:
         extracted_kpis: List[ExtractedKPI] = []
         seen: set = set()
         any_success = False
+        dropped = 0
 
         reply_tokens = 2000
         detected = _detect_context_chars(
@@ -388,11 +412,20 @@ class AIService:
                 key = name.lower()
                 if key in seen:
                     continue
+                value = _coerce_number(kpi_data.get("kpi_value"))
+                if not _value_in_text(value, windows[idx]):
+                    logger.warning(
+                        "Dropping ungrounded KPI %r=%s (not present in window %d)",
+                        name, value, idx + 1,
+                    )
+                    dropped += 1
+                    continue
+
                 seen.add(key)
                 extracted_kpis.append(ExtractedKPI(
                     file_id=file_id,
                     kpi_name=name[:255],
-                    kpi_value=_coerce_number(kpi_data.get("kpi_value")),
+                    kpi_value=value,
                     kpi_unit=(str(kpi_data.get("kpi_unit"))[:50]
                               if kpi_data.get("kpi_unit") else None),
                     confidence_score=kpi_data.get("confidence_score", 0.5),
@@ -400,6 +433,10 @@ class AIService:
                     raw_text="",
                     context=f"window {idx + 1}/{len(windows)}",
                 ))
+
+        if dropped:
+            logger.info("Dropped %d ungrounded KPI(s) not found in the source text",
+                        dropped)
 
         if not any_success:
             logger.warning("All AI windows failed; falling back to pattern matching")
