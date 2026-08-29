@@ -130,7 +130,9 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
     content_chunk TEXT NOT NULL,
     embedding vector(768), -- must match LLM_EMBEDDING_MODEL (nomic-embed-text = 768)
     chunk_index INTEGER,
-    metadata JSONB,
+    -- named chunk_metadata (not metadata): SQLAlchemy reserves Base.metadata,
+    -- so the ORM model cannot map a column literally called "metadata".
+    chunk_metadata JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

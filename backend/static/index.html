@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KPI Admin</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb;
+  --accent:#2563eb; --accent-ink:#fff; --ok:#059669; --warn:#b45309; --err:#dc2626;
+  --chip:#f3f4f6;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#0f1115; --panel:#171a21; --ink:#e5e7eb; --muted:#9ca3af; --line:#262b36;
+  --accent:#3b82f6; --chip:#20242e;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);padding:7px 13px}
+button.p{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+button.d{color:var(--err)}
+button:disabled{opacity:.5;cursor:not-allowed}
+input,select,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--panel);color:var(--ink);width:100%}
+a{color:var(--accent)}
+.hide{display:none!important}
+
+/* login */
+#login{max-width:340px;margin:14vh auto;padding:26px;background:var(--panel);
+  border:1px solid var(--line);border-radius:14px}
+#login h1{margin:0 0 4px;font-size:19px}
+#login p{margin:0 0 18px;color:var(--muted);font-size:13px}
+#login label{display:block;margin:12px 0 5px;font-size:12px;color:var(--muted)}
+
+/* shell */
+#app{display:grid;grid-template-columns:210px 1fr;min-height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;
+  display:flex;flex-direction:column;gap:3px}
+.brand{font-weight:650;padding:6px 10px 14px;font-size:15px}
+nav button{width:100%;text-align:left;border:0;background:transparent;padding:9px 11px;
+  color:var(--muted);border-radius:8px}
+nav button.on{background:var(--chip);color:var(--ink);font-weight:600}
+.who{margin-top:auto;padding:10px;border-top:1px solid var(--line);
+  font-size:12px;color:var(--muted)}
+main{padding:22px 26px;min-width:0;overflow-x:auto}
+h2{margin:0 0 3px;font-size:20px}
+.sub{color:var(--muted);margin:0 0 18px;font-size:13px}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:16px;margin-bottom:16px}
+.card h3{margin:0 0 12px;font-size:14px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;
+  margin-bottom:16px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+.tile .n{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums}
+.tile .l{color:var(--muted);font-size:12px;margin-top:2px}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);
+  vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;
+  letter-spacing:.04em}
+tbody tr:last-child td{border-bottom:0}
+.tw{overflow-x:auto}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;background:var(--chip);
+  font-size:11px}
+.chip.ok{color:var(--ok)} .chip.warn{color:var(--warn)} .chip.err{color:var(--err)}
+.row{display:flex;gap:9px;align-items:end;flex-wrap:wrap}
+.row>div{flex:1;min-width:150px}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.acts button{padding:4px 9px;font-size:12px}
+.empty{color:var(--muted);padding:22px;text-align:center}
+label.f{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+pre{background:var(--chip);padding:11px;border-radius:8px;overflow-x:auto;font-size:12px;
+  margin:0}
+#toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;
+  z-index:50}
+.t{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:8px;padding:10px 14px;box-shadow:0 6px 20px #0002;max-width:340px;
+  font-size:13px}
+.t.err{border-left-color:var(--err)} .t.ok{border-left-color:var(--ok)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);
+  border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;
+  vertical-align:-2px}
+@keyframes s{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>KPI Admin</h1>
+  <p>Sign in to the extraction platform</p>
+  <label>Email</label>
+  <input id="lu" type="email" value="sohanbiswas09@gmail.com" autocomplete="username">
+  <label>Password</label>
+  <input id="lp" type="password" value="TestPass123!" autocomplete="current-password">
+  <button class="p" id="lb" style="width:100%;margin-top:16px">Sign in</button>
+  <div id="lerr" style="color:var(--err);font-size:12px;margin-top:10px"></div>
+</div>
+
+<div id="app" class="hide">
+  <aside>
+    <div class="brand">KPI Admin</div>
+    <nav id="nav"></nav>
+    <div class="who"><span id="who"></span><br>
+      <button id="out" style="margin-top:8px;padding:4px 9px;font-size:12px">Sign out</button>
+    </div>
+  </aside>
+  <main id="view"></main>
+</div>
+<div id="toast"></div>
+
+<script>
+const API='/api/v1';
+let TOK=localStorage.getItem('kpi_tok')||'';
+let ME=null, ORG=1, ORGS=[];
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=d=>d?new Date(d).toLocaleString():'—';
+
+function toast(msg,kind){
+  const el=document.createElement('div');
+  el.className='t'+(kind?' '+kind:''); el.textContent=msg;
+  $('#toast').append(el); setTimeout(()=>el.remove(),5200);
+}
+
+async function api(path,opts={}){
+  const o={...opts,headers:{...(opts.headers||{})}};
+  if(TOK) o.headers.Authorization='Bearer '+TOK;
+  const r=await fetch(API+path,o);
+  if(r.status===401){ logout(); throw new Error('Session expired — sign in again'); }
+  const ct=r.headers.get('content-type')||'';
+  const body=ct.includes('json')?await r.json().catch(()=>null):await r.text();
+  if(!r.ok){
+    let m=body&&body.detail?body.detail:('HTTP '+r.status);
+    if(Array.isArray(m)) m=m.map(x=>(x.loc||[]).slice(-1)[0]+': '+x.msg).join('; ');
+    throw new Error(typeof m==='string'?m:JSON.stringify(m));
+  }
+  return body;
+}
+
+/* ---------- auth ---------- */
+async function login(){
+  $('#lerr').textContent=''; $('#lb').disabled=true;
+  try{
+    const b=new URLSearchParams({username:$('#lu').value,password:$('#lp').value});
+    const r=await fetch(API+'/auth/login',{method:'POST',body:b,
+      headers:{'Content-Type':'application/x-www-form-urlencoded'}});
+    const j=await r.json();
+    if(!r.ok) throw new Error(j.detail||'Login failed');
+    TOK=j.access_token; localStorage.setItem('kpi_tok',TOK); await boot();
+  }catch(e){ $('#lerr').textContent=e.message; }
+  finally{ $('#lb').disabled=false; }
+}
+function logout(){
+  TOK=''; localStorage.removeItem('kpi_tok');
+  $('#app').classList.add('hide'); $('#login').classList.remove('hide');
+}
+
+/* ---------- shell ---------- */
+const PAGES=[['overview','Overview'],['files','Files'],['kpis','KPIs'],
+             ['users','Users'],['orgs','Organizations']];
+let PAGE='overview';
+
+async function boot(){
+  try{ ME=await api('/auth/me'); }catch(e){ return logout(); }
+  $('#login').classList.add('hide'); $('#app').classList.remove('hide');
+  $('#who').innerHTML=esc(ME.email)+'<br><span class="chip">'+esc(ME.role)+'</span>';
+  try{ ORGS=await api('/organizations/'); }catch(e){ ORGS=[]; }
+  if(ORGS.length && !ORGS.find(o=>o.id===ORG)) ORG=ORGS[0].id;
+  $('#nav').innerHTML=PAGES.map(([k,l])=>
+    '<button data-p="'+k+'">'+l+'</button>').join('');
+  $('#nav').onclick=e=>{ const b=e.target.closest('button');
+    if(b){ PAGE=b.dataset.p; render(); } };
+  render();
+}
+function render(){
+  document.querySelectorAll('#nav button').forEach(b=>
+    b.classList.toggle('on',b.dataset.p===PAGE));
+  ({overview:vOverview,files:vFiles,kpis:vKpis,users:vUsers,orgs:vOrgs})[PAGE]();
+}
+function orgPicker(){
+  if(ORGS.length<2) return '';
+  return '<div style="margin-bottom:14px"><label class="f">Organization</label>'+
+    '<select id="orgsel" style="max-width:260px">'+ORGS.map(o=>
+      '<option value="'+o.id+'"'+(o.id===ORG?' selected':'')+'>'+esc(o.name)+
+      '</option>').join('')+'</select></div>';
+}
+function wireOrg(){ const s=$('#orgsel');
+  if(s) s.onchange=()=>{ ORG=+s.value; render(); }; }
+
+/* ---------- overview ---------- */
+async function vOverview(){
+  $('#view').innerHTML='<h2>Overview</h2><p class="sub">Loading…</p>';
+  const [files,kpis,users]=await Promise.all([
+    api('/files/?limit=500').catch(()=>[]),
+    api('/kpis/?organization_id='+ORG).catch(()=>[]),
+    api('/users/?limit=500').catch(()=>[]),
+  ]);
+  const done=files.filter(f=>f.status==='completed').length;
+  $('#view').innerHTML='<h2>Overview</h2>'+
+    '<p class="sub">KPI Extraction Platform — local instance</p>'+
+    '<div class="tiles">'+
+      tile(files.length,'Files uploaded')+ tile(done,'Processed')+
+      tile(kpis.length,'KPIs')+ tile(users.length,'Users')+
+      tile(ORGS.length,'Organizations')+
+    '</div>'+
+    '<div class="card"><h3>Recent files</h3>'+filesTable(files.slice(0,5))+'</div>';
+}
+const tile=(n,l)=>'<div class="tile"><div class="n">'+n+'</div><div class="l">'+l+'</div></div>';
+
+/* ---------- files ---------- */
+function statusChip(s){
+  const k=s==='completed'?'ok':s==='failed'?'err':s==='processing'?'warn':'';
+  return '<span class="chip '+k+'">'+esc(s||'—')+'</span>';
+}
+function filesTable(list){
+  if(!list.length) return '<div class="empty">No files yet.</div>';
+  return '<div class="tw"><table><thead><tr><th>ID</th><th>Name</th><th>Type</th>'+
+    '<th>Size</th><th>Status</th><th>Uploaded</th><th></th></tr></thead><tbody>'+
+    list.map(f=>'<tr><td>'+f.id+'</td><td>'+esc(f.original_filename||f.filename)+
+      '</td><td>'+esc((f.file_type||'').split('/').pop())+'</td><td>'+
+      (f.file_size?(f.file_size/1024).toFixed(0)+' KB':'—')+'</td><td>'+
+      statusChip(f.status)+'</td><td>'+fmt(f.created_at)+'</td>'+
+      '<td class="acts">'+
+        '<button data-t="'+f.id+'">Tables</button>'+
+        '<button data-x="'+f.id+'">Extract KPIs</button>'+
+        '<button data-k="'+f.id+'">KPIs</button>'+
+        '<button class="d" data-del="'+f.id+'">Delete</button>'+
+      '</td></tr>').join('')+'</tbody></table></div>';
+}
+async function vFiles(){
+  $('#view').innerHTML='<h2>Files</h2><p class="sub">Upload a document and run extraction.</p>'+
+    orgPicker()+
+    '<div class="card"><h3>Upload</h3><div class="row">'+
+      '<div style="flex:2"><label class="f">Document</label>'+
+        '<input type="file" id="uf" accept=".pdf,.xlsx,.xls,.docx,.csv,.png,.jpg,.jpeg"></div>'+
+      '<div><label class="f">Description</label><input id="ud" placeholder="optional"></div>'+
+      '<div style="flex:0"><button class="p" id="ub">Upload</button></div>'+
+    '</div><div style="color:var(--muted);font-size:12px;margin-top:9px">'+
+      'PDF, XLSX, DOCX, CSV or image · max 50 MB</div></div>'+
+    '<div class="card"><h3>All files</h3><div id="fl">Loading…</div></div>'+
+    '<div id="detail"></div>';
+  wireOrg();
+  $('#ub').onclick=upload;
+  await loadFiles();
+}
+async function loadFiles(){
+  try{
+    const list=await api('/files/?limit=200&organization_id='+ORG);
+    $('#fl').innerHTML=filesTable(list);
+    $('#fl').onclick=onFileAct;
+  }catch(e){ $('#fl').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }
+}
+async function upload(){
+  const f=$('#uf').files[0];
+  if(!f) return toast('Choose a file first','err');
+  const fd=new FormData();
+  fd.append('file',f); fd.append('organization_id',ORG);
+  if($('#ud').value) fd.append('description',$('#ud').value);
+  $('#ub').disabled=true; $('#ub').innerHTML='<span class="spin"></span> Uploading';
+  try{
+    const r=await api('/files/upload',{method:'POST',body:fd});
+    toast('Uploaded: '+(r.file?.original_filename||f.name),'ok');
+    $('#uf').value=''; $('#ud').value=''; await loadFiles();
+  }catch(e){ toast(e.message,'err'); }
+  finally{ $('#ub').disabled=false; $('#ub').textContent='Upload'; }
+}
+async function onFileAct(e){
+  const b=e.target.closest('button'); if(!b) return;
+  const d=$('#detail');
+  if(b.dataset.t){
+    d.innerHTML='<div class="card"><h3>Tables — file #'+b.dataset.t+'</h3>'+
+      '<div><span class="spin"></span> Loading…</div></div>';
+    try{
+      const t=await api('/files/'+b.dataset.t+'/tables');
+      d.innerHTML='<div class="card"><h3>Tables — file #'+b.dataset.t+
+        '</h3>'+renderTables(t)+'</div>';
+    }catch(err){ d.innerHTML='<div class="card"><h3>Tables</h3><div class="empty">'+
+      esc(err.message)+'</div></div>'; }
+    d.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+  if(b.dataset.x){
+    b.disabled=true; const o=b.textContent;
+    b.innerHTML='<span class="spin"></span> 30–60s';
+    toast('Extracting KPIs with gemma-4 — this takes 30–60s');
+    try{
+      await api('/files/'+b.dataset.x+'/extract-kpis',{method:'POST'});
+      toast('Extraction complete','ok'); await loadFiles();
+    }catch(err){ toast(err.message,'err'); }
+    finally{ b.disabled=false; b.textContent=o; }
+  }
+  if(b.dataset.k){
+    d.innerHTML='<div class="card"><h3>Extracted KPIs — file #'+b.dataset.k+
+      '</h3><div><span class="spin"></span> Loading…</div></div>';
+    try{
+      const k=await api('/files/'+b.dataset.k+'/extracted-kpis');
+      d.innerHTML='<div class="card"><h3>Extracted KPIs — file #'+b.dataset.k+'</h3>'+
+        (k.length?'<pre>'+esc(JSON.stringify(k,null,2))+'</pre>':
+        '<div class="empty">No KPIs yet — run Extract KPIs first.</div>')+'</div>';
+    }catch(err){ d.innerHTML='<div class="card"><div class="empty">'+
+      esc(err.message)+'</div></div>'; }
+  }
+  if(b.dataset.del){
+    if(!confirm('Delete file #'+b.dataset.del+'? This cannot be undone.')) return;
+    try{ await api('/files/'+b.dataset.del,{method:'DELETE'});
+      toast('Deleted','ok'); d.innerHTML=''; await loadFiles();
+    }catch(err){ toast(err.message,'err'); }
+  }
+}
+function renderTables(list){
+  if(!list||!list.length) return '<div class="empty">No tables extracted from this file.</div>';
+  return list.map(t=>{
+    const rows=t.rows||[];
+    const head=rows[0]||[], body=rows.slice(1,26);
+    return '<div style="margin-bottom:18px"><div style="color:var(--muted);'+
+      'font-size:12px;margin-bottom:7px">page '+t.page+' · table #'+t.table_index+
+      ' · '+t.n_rows+'×'+t.n_cols+
+      (t.sheet_name?' · sheet '+esc(t.sheet_name):'')+
+      (t.source?' · via '+esc(t.source):'')+'</div>'+
+      '<div class="tw"><table><thead><tr>'+head.map(h=>'<th>'+esc(h)+'</th>').join('')+
+      '</tr></thead><tbody>'+body.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+
+      '</tr>').join('')+'</tbody></table></div>'+
+      (rows.length>26?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+
+        '… '+(rows.length-26)+' more rows</div>':'')+'</div>';
+  }).join('');
+}
+
+/* ---------- kpis ---------- */
+async function vKpis(){
+  $('#view').innerHTML='<h2>KPIs</h2><p class="sub">Structured metrics for this organization.</p>'+
+    orgPicker()+'<div class="card"><div id="kl">Loading…</div></div>';
+  wireOrg();
+  try{
+    const k=await api('/kpis/?organization_id='+ORG);
+    $('#kl').innerHTML=k.length?'<div class="tw"><table><thead><tr><th>ID</th><th>Name</th>'+
+      '<th>Category</th><th>Current</th><th>Target</th><th>Unit</th><th>Created</th>'+
+      '<th></th></tr></thead><tbody>'+k.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.name)+
+      '</td><td><span class="chip">'+esc(x.category)+'</span></td><td>'+
+      (x.current_value??'—')+'</td><td>'+(x.target_value??'—')+'</td><td>'+
+      esc(x.unit||'—')+'</td><td>'+fmt(x.created_at)+'</td>'+
+      '<td class="acts"><button class="d" data-dk="'+x.id+'">Delete</button></td>'+
+      '</tr>').join('')+'</tbody></table></div>':
+      '<div class="empty">No KPIs yet. Upload a file and run Extract KPIs.</div>';
+    $('#kl').onclick=async e=>{
+      const b=e.target.closest('button[data-dk]'); if(!b) return;
+      if(!confirm('Delete KPI #'+b.dataset.dk+'?')) return;
+      try{ await api('/kpis/'+b.dataset.dk,{method:'DELETE'});
+        toast('Deleted','ok'); vKpis(); }catch(err){ toast(err.message,'err'); }
+    };
+  }catch(e){ $('#kl').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }
+}
+
+/* ---------- users ---------- */
+async function vUsers(){
+  $('#view').innerHTML='<h2>Users</h2><p class="sub">Accounts on this instance.</p>'+
+    '<div class="card"><div id="ul">Loading…</div></div>';
+  try{
+    const u=await api('/users/?limit=200');
+    $('#ul').innerHTML=u.length?'<div class="tw"><table><thead><tr><th>ID</th>'+
+      '<th>Username</th><th>Email</th><th>Name</th><th>Role</th><th>Active</th>'+
+      '<th>Created</th></tr></thead><tbody>'+u.map(x=>'<tr><td>'+x.id+'</td><td>'+
+      esc(x.username)+'</td><td>'+esc(x.email)+'</td><td>'+esc(x.full_name||'—')+
+      '</td><td><span class="chip">'+esc(x.role)+'</span></td><td>'+
+      (x.is_active?'<span class="chip ok">yes</span>':'<span class="chip err">no</span>')+
+      '</td><td>'+fmt(x.created_at)+'</td></tr>').join('')+'</tbody></table></div>':
+      '<div class="empty">No users.</div>';
+  }catch(e){ $('#ul').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }
+}
+
+/* ---------- orgs ---------- */
+async function vOrgs(){
+  $('#view').innerHTML='<h2>Organizations</h2><p class="sub">Tenants that own files and KPIs.</p>'+
+    '<div class="card"><h3>New organization</h3><div class="row">'+
+    '<div><label class="f">Name</label><input id="on" placeholder="Acme Inc"></div>'+
+    '<div><label class="f">Description</label><input id="od" placeholder="optional"></div>'+
+    '<div style="flex:0"><button class="p" id="ob">Create</button></div></div></div>'+
+    '<div class="card"><div id="ol">Loading…</div></div>';
+  $('#ob').onclick=async()=>{
+    const name=$('#on').value.trim();
+    if(!name) return toast('Name is required','err');
+    try{
+      await api('/organizations/',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name,description:$('#od').value||null})});
+      toast('Created','ok'); ORGS=await api('/organizations/'); vOrgs();
+    }catch(e){ toast(e.message,'err'); }
+  };
+  try{
+    const o=await api('/organizations/');
+    ORGS=o;
+    $('#ol').innerHTML=o.length?'<div class="tw"><table><thead><tr><th>ID</th><th>Name</th>'+
+      '<th>Description</th><th>Created</th></tr></thead><tbody>'+o.map(x=>'<tr><td>'+
+      x.id+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.description||'—')+'</td><td>'+
+      fmt(x.created_at)+'</td></tr>').join('')+'</tbody></table></div>':
+      '<div class="empty">No organizations.</div>';
+  }catch(e){ $('#ol').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }
+}
+
+/* ---------- init ---------- */
+$('#lb').onclick=login;
+$('#lp').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+$('#out').onclick=logout;
+if(TOK) boot(); else { $('#login').classList.remove('hide'); }
+</script>
+</body>
+</html>

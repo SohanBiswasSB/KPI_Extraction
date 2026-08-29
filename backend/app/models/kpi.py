@@ -8,6 +8,9 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from pydantic import BaseModel
 
+from pgvector.sqlalchemy import Vector
+
+from app.core.config import settings
 from app.core.database import Base
 
 
@@ -74,7 +77,7 @@ class KPIEmbedding(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     kpi_id = Column(Integer, ForeignKey("kpis.id"), nullable=False)
-    embedding = Column("embedding", type_=None)  # Will be handled by pgvector
+    embedding = Column(Vector(settings.VECTOR_DIMENSION))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships

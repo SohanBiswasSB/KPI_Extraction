@@ -8,6 +8,9 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from pydantic import BaseModel
 
+from pgvector.sqlalchemy import Vector
+
+from app.core.config import settings
 from app.core.database import Base
 
 
@@ -106,7 +109,7 @@ class DocumentEmbedding(Base):
     id = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("uploaded_files.id"), nullable=False)
     content_chunk = Column(Text, nullable=False)
-    embedding = Column("embedding", type_=None)  # Will be handled by pgvector
+    embedding = Column(Vector(settings.VECTOR_DIMENSION))
     chunk_index = Column(Integer)
     chunk_metadata = Column(JSON)  # Store additional metadata about the chunk
     created_at = Column(DateTime(timezone=True), server_default=func.now())

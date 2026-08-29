@@ -56,6 +56,11 @@ app.include_router(api_router, prefix="/api/v1")
 if os.path.exists("uploads"):
     app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+# Single-page admin console (same-origin, so no CORS config needed)
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if os.path.exists(_STATIC_DIR):
+    app.mount("/admin", StaticFiles(directory=_STATIC_DIR, html=True), name="admin")
+
 
 @app.get("/")
 async def root():
@@ -63,7 +68,8 @@ async def root():
     return {
         "message": "KPI Extraction Platform API",
         "version": "1.0.0",
-        "docs": "/docs"
+        "docs": "/docs",
+        "admin": "/admin/"
     }
 
 
