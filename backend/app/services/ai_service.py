@@ -74,7 +74,50 @@ def _parse_json_response(content: Optional[str]) -> Any:
             return json.loads(candidate)
         except json.JSONDecodeError:
             continue
+
+    # Last resort: the model hit max_tokens and the array was cut off mid-item.
+    # Recover every complete {...} object rather than discarding the whole reply.
+    salvaged = _salvage_objects(text)
+    if salvaged:
+        logger.warning(
+            "Model response was truncated; salvaged %d complete item(s)", len(salvaged)
+        )
+        return salvaged
+
     raise ValueError(f"no JSON found in model response: {content[:200]!r}")
+
+
+def _salvage_objects(text: str) -> List[Any]:
+    """Pull complete top-level {...} objects out of a truncated JSON array."""
+    items: List[Any] = []
+    depth = 0
+    start = -1
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start != -1:
+                try:
+                    items.append(json.loads(text[start : i + 1]))
+                except json.JSONDecodeError:
+                    pass
+                start = -1
+    return items
 
 
 
@@ -123,30 +166,31 @@ class AIService:
         # Use OpenAI to identify and extract KPIs
         try:
             prompt = f"""
-            Analyze the following text and extract KPIs (Key Performance Indicators).
-            For each KPI found, provide:
-            1. KPI name (clear, descriptive)
-            2. Value (numeric if available)
-            3. Unit (if mentioned)
-            4. Confidence level (0.0 to 1.0)
-            5. Context (surrounding text)
+            Extract business KPIs (Key Performance Indicators) from the text.
+
+            Rules:
+            - Return ONLY a JSON array. No prose before or after.
+            - At most 30 KPIs, the most significant ones.
+            - kpi_value must be a plain number (no commas, currency symbols or
+              percent signs) or null. Put the unit in kpi_unit.
+            - If the table states a scale such as "(In millions)", reflect it in
+              kpi_unit, e.g. "USD millions" or "%".
+            - Include the period in kpi_name when the column identifies one,
+              e.g. "Total net sales (FY2025)".
+            - Keep every field short. Do NOT echo the source text back.
 
             Text to analyze:
             {text[:4000]}
 
-            Return the results as a JSON array with the following structure:
+            JSON array format:
             [
                 {{
                     "kpi_name": "string",
-                    "kpi_value": "number or null",
+                    "kpi_value": 0,
                     "kpi_unit": "string or null",
-                    "confidence_score": "number between 0 and 1",
-                    "raw_text": "exact text where KPI was found",
-                    "context": "surrounding context"
+                    "confidence_score": 0.9
                 }}
             ]
-
-            Focus on identifying meaningful business metrics and KPIs.
             """
 
             response = self.client.chat.completions.create(
@@ -167,8 +211,11 @@ class AIService:
                         kpi_unit=kpi_data.get("kpi_unit"),
                         confidence_score=kpi_data.get("confidence_score", 0.5),
                         extraction_method="ai",
-                        raw_text=kpi_data.get("raw_text", ""),
-                        context=kpi_data.get("context", "")
+                        # No longer requested from the model — echoing the source
+                        # for every KPI overflowed max_tokens and truncated the
+                        # JSON array mid-item. Record a compact provenance note.
+                        raw_text=str(kpi_data.get("raw_text") or "")[:500],
+                        context=str(kpi_data.get("context") or "")[:500]
                     )
                     extracted_kpis.append(extracted_kpi)
 

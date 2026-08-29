@@ -380,6 +380,7 @@ function filesTable(list,acts){
         '<button data-t="'+f.id+'"'+(busy?' disabled':'')+'>Tables</button>'+
         '<button data-x="'+f.id+'"'+(busy?' disabled':'')+'>Extract KPIs</button>'+
         '<button data-k="'+f.id+'"'+(busy?' disabled':'')+'>KPIs</button>'+
+        '<button data-pr="'+f.id+'"'+(busy?' disabled':'')+'>→ Curated</button>'+
         '<button class="d" data-del="'+f.id+'">Delete</button>'+
       '</td>':'')+'</tr>';
     }).join('')+'</tbody></table></div>'+
@@ -512,6 +513,15 @@ async function onFileAct(e){
     }catch(err){ d.innerHTML='<div class="card"><div class="empty">'+
       esc(err.message)+'</div></div>'; }
   }
+  if(b.dataset.pr){
+    b.disabled=true; const o=b.textContent;
+    b.innerHTML='<span class="spin"></span>';
+    try{
+      const r=await api('/files/'+b.dataset.pr+'/promote-kpis',{method:'POST'});
+      toast(r.message, r.promoted?'ok':undefined);
+    }catch(err){ toast(err.message,'err'); }
+    finally{ b.disabled=false; b.textContent=o; await refreshNow(false); }
+  }
   if(b.dataset.del){
     if(!confirm('Delete file #'+b.dataset.del+'? This cannot be undone.')) return;
     try{ await api('/files/'+b.dataset.del,{method:'DELETE'});
@@ -614,9 +624,10 @@ async function vKpis(){
       esc(x.unit||'—')+'</td><td>'+fmt(x.created_at)+'</td>'+
       '<td class="acts"><button class="d" data-dk="'+x.id+'">Delete</button></td>'+
       '</tr>').join('')+'</tbody></table></div>':
-      '<div class="es"><div class="big">No KPIs yet</div>'+
-      'These are <b>curated</b> KPIs. Raw model output lands in a file\'s '+
-      '<code>Extracted KPIs</code> view first — open <b>Files</b> → <b>KPIs</b>.</div>';
+      '<div class="es"><div class="big">No curated KPIs yet</div>'+
+      'Extraction writes to a per-file staging area. To bring those metrics '+
+      'here, open <b>Files</b> and hit <code>→ Curated</code> on a processed '+
+      'file.</div>';
     $('#kl').onclick=async e=>{
       const b=e.target.closest('button[data-dk]'); if(!b) return;
       if(!confirm('Delete KPI #'+b.dataset.dk+'?')) return;

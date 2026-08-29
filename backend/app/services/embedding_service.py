@@ -40,27 +40,60 @@ class EmbeddingService:
             # Return zero vector as fallback
             return [0.0] * self.vector_dimension
 
+    # Lines at the top of a table block that identify it: title, units
+    # ("In millions"), "Years ended", and the column headers. These must ride
+    # along with every chunk of that table.
+    HEADER_LINES = 12
+
+    @staticmethod
+    def _split_blocks(text: str) -> List[str]:
+        """Split flattened text into per-table blocks on the [page N table M] marker."""
+        blocks: List[str] = []
+        current: List[str] = []
+        for line in text.split("\n"):
+            if line.startswith("[page ") and current:
+                blocks.append("\n".join(current))
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            blocks.append("\n".join(current))
+        return [b for b in blocks if b.strip()]
+
     async def chunk_text(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
-        """Split text into chunks for embedding."""
+        """Split text into chunks, keeping each table's header with its rows.
+
+        A plain character-window split orphans the header block (table title,
+        "(In millions)", and the year columns) from the numeric rows, so a
+        retrieved chunk arrives with unlabelled columns and the model guesses
+        the period and units. Every chunk therefore repeats its table's header.
+        """
         if chunk_size is None:
             chunk_size = settings.CHUNK_SIZE
         if overlap is None:
             overlap = settings.CHUNK_OVERLAP
 
-        chunks = []
-        start = 0
+        chunks: List[str] = []
+        for block in self._split_blocks(text):
+            lines = block.split("\n")
+            header = "\n".join(lines[: self.HEADER_LINES]).strip()
+            body = "\n".join(lines[self.HEADER_LINES :])
 
-        while start < len(text):
-            end = start + chunk_size
-            chunk = text[start:end]
-            chunks.append(chunk)
+            if not body.strip():
+                chunks.append(block[:chunk_size])
+                continue
 
-            # Move start position with overlap
-            start = end - overlap
-            if start >= len(text):
-                break
+            budget = max(chunk_size - len(header) - 1, chunk_size // 2)
+            start = 0
+            while start < len(body):
+                piece = body[start : start + budget]
+                chunks.append(f"{header}\n{piece}" if header else piece)
+                nxt = start + budget - overlap
+                if nxt <= start:
+                    break
+                start = nxt
 
-        return chunks
+        return [c for c in chunks if c.strip()]
 
     async def create_document_embeddings(
         self, file_id: int, text: str, db: AsyncSession

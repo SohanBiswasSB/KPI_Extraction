@@ -19,6 +19,7 @@ from app.models.file import (
     TablePreviewResponse, FileUploadResponse,
     DocumentSearchQuery, DocumentSearchResult,
 )
+from app.models.kpi import KPI
 from app.models.user import User
 from app.services.file_service import FileService
 from app.services.embedding_service import EmbeddingService
@@ -348,6 +349,71 @@ async def get_file_status(
         "created_at": file.created_at,
         "updated_at": file.updated_at
     }
+
+
+class PromoteResponse(BaseModel):
+    """Result of promoting a file's extracted KPIs into the curated KPI table."""
+
+    promoted: int
+    skipped: int
+    message: str
+
+
+@router.post("/{file_id}/promote-kpis", response_model=PromoteResponse)
+async def promote_extracted_kpis(
+    file_id: int,
+    min_confidence: float = Query(0.5, ge=0.0, le=1.0),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ANALYST))
+):
+    """Copy a file's extracted KPIs into the curated `kpis` table.
+
+    Extraction writes to `extracted_kpis`, which is a per-file staging area.
+    Nothing else in the codebase moves those rows into `kpis`, so the curated
+    KPI list stayed empty no matter how many documents were processed. This is
+    that missing step: it is explicit (you choose when to promote) and
+    idempotent (an existing KPI with the same name in the org is skipped).
+    """
+    result = await db.execute(select(UploadedFile).where(UploadedFile.id == file_id))
+    file = result.scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    rows = await db.execute(
+        select(ExtractedKPI).where(ExtractedKPI.file_id == file_id)
+    )
+    extracted = list(rows.scalars().all())
+
+    existing = await db.execute(
+        select(KPI.name).where(KPI.organization_id == file.organization_id)
+    )
+    taken = {n for (n,) in existing.all()}
+
+    promoted = 0
+    skipped = 0
+    for row in extracted:
+        name = (row.kpi_name or "").strip()
+        conf = float(row.confidence_score or 0)
+        if not name or name in taken or conf < min_confidence:
+            skipped += 1
+            continue
+        db.add(KPI(
+            name=name[:255],
+            description=f"Extracted from {file.original_filename}",
+            unit=(row.kpi_unit or None),
+            current_value=row.kpi_value,
+            organization_id=file.organization_id,
+            created_by=current_user.id,
+        ))
+        taken.add(name)
+        promoted += 1
+
+    await db.commit()
+    return PromoteResponse(
+        promoted=promoted, skipped=skipped,
+        message=f"Promoted {promoted} KPI(s); skipped {skipped} "
+                f"(duplicate, unnamed, or below confidence {min_confidence}).",
+    )
 
 
 @router.post("/{file_id}/extract-kpis")
