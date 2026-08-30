@@ -388,7 +388,8 @@ class AIService:
 
         reply_tokens = 2000
         detected, budget_tokens, ratio = windowing.window_chars(
-            settings.LLM_BASE_URL, settings.LLM_MODEL, reply_tokens, text
+            settings.LLM_BASE_URL, settings.LLM_MODEL, reply_tokens, text,
+            concurrency=settings.KPI_CONCURRENCY,
         )
         # KPI_WINDOW_CHARS stays an upper bound, but the measured figure is
         # what normally governs: it is the one that reflects this document.

@@ -74,8 +74,8 @@ def measure_chars_per_token(base_url: str, model: str, text: str) -> Optional[fl
     return len(sample) / tokens
 
 
-def detect_context_tokens(base_url: str, model: str,
-                           reply_tokens: int) -> Optional[int]:
+def detect_context_tokens(base_url: str, model: str, reply_tokens: int,
+                          concurrency: int = 1) -> Optional[int]:
     """Ask the local server how many prompt tokens the model can actually take.
 
     LM Studio silently re-loads a model at its default context (often 8192)
@@ -103,19 +103,31 @@ def detect_context_tokens(base_url: str, model: str,
             # 10-K, which overflowed every window. 1.8 leaves real headroom.
             # PROMPT_OVERHEAD covers the instruction block wrapped around each
             # window; without it the reservation is short by ~600 tokens.
-            return max(int(ctx) - reply_tokens - PROMPT_OVERHEAD_TOKENS, 512)
+            # Divide first: the whole context, reply included, is shared by
+            # every request in flight.
+            share = int(ctx) // max(concurrency, 1)
+            return max(share - reply_tokens - PROMPT_OVERHEAD_TOKENS, 512)
     return None
 
 
 def window_chars(base_url: str, model: str, reply_tokens: int,
-                  text: str) -> tuple:
+                  text: str, concurrency: int = 1) -> tuple:
     """Window size in characters, sized from measured tokens for this document.
 
     Returns ``(chars, tokens, ratio)`` where chars is None if the server does
     not report a context length and the caller should keep its configured
     default.
+
+    The context is SHARED across in-flight requests, not allocated per slot.
+    Measured against LM Studio with a 16384 context and unified KV cache, an
+    11,891-token prompt succeeds alone and fails with "Context size has been
+    exceeded" as soon as a second request runs beside it. So concurrency does
+    not buy throughput for free - it divides the budget every request gets,
+    and a window sized for the whole context will fail the moment anything
+    runs next to it.
     """
-    tokens = detect_context_tokens(base_url, model, reply_tokens)
+    tokens = detect_context_tokens(base_url, model, reply_tokens,
+                                   concurrency=concurrency)
     if tokens is None:
         return (None, None, None)
     ratio = measure_chars_per_token(base_url, model, text)
