@@ -108,17 +108,20 @@ class Settings(BaseSettings):
     # far larger on prose. Kept as an escape hatch for forcing small windows.
     KPI_WINDOW_CHARS: int = 120000
     KPI_MAX_WINDOWS: int = 40
-    # Windows are sent concurrently; this must not exceed the inference
-    # server's parallel slot count (LM Studio shows it as "Parallel" on the
-    # loaded model, and logs it as n_slots).
+    # How many extraction windows are in flight at once.
     #
-    # Sizing note: with the classic per-slot KV cache, context x parallel is
-    # what has to fit in RAM - ctx 32768 x 6 slots needs ~22GB and simply fails
-    # to load on 24GB. With LM Studio's "Unified KV Cache" enabled (the server
-    # logs kv_unified = 'true') the slots draw from one shared pool instead, so
-    # raising concurrency no longer multiplies the KV footprint. The current
-    # setup runs 6 slots at ctx 16384 with unified KV on.
-    KPI_CONCURRENCY: int = 4
+    # MEASURED, and counter-intuitive: the model's context is shared across
+    # in-flight requests, not allocated per slot. On LM Studio at ctx 16384
+    # with unified KV cache, an 11,891-token prompt succeeds alone and fails
+    # with "Context size has been exceeded" the moment a second request runs
+    # beside it. Concurrency therefore DIVIDES the budget each request gets:
+    # at 2 a window may only be ~5.4k tokens, at 1 it can be ~13.6k.
+    #
+    # Since halving the window roughly doubles the window count, concurrency
+    # buys little here and costs correctness if the window sizing forgets to
+    # divide (see services/windowing.py, which now does). 1 keeps the largest
+    # possible window and the fewest calls.
+    KPI_CONCURRENCY: int = 1
 
     # --- Contextual retrieval -------------------------------------------
     # Generate a one-sentence description of each chunk and prepend it before
@@ -136,8 +139,10 @@ class Settings(BaseSettings):
     # Measured on an M4 Pro against the loaded 7B: 12 chunks took 14.2s at
     # concurrency 1, 6.2s at 2, and 6.9s at 4. The GPU saturates at two
     # in-flight requests, so raising this past 2 buys nothing on this hardware
-    # even though LM Studio exposes 6 slots.
-    CONTEXT_CONCURRENCY: int = 4
+    # even though LM Studio exposes 6 slots. Safe to run concurrently despite
+    # the shared context noted on KPI_CONCURRENCY, because these prompts are
+    # one chunk each (~500 tokens), not a whole extraction window.
+    CONTEXT_CONCURRENCY: int = 2
     CONTEXT_MAX_CHARS: int = 1500   # of the chunk shown to the context model
 
     # Vector database settings
