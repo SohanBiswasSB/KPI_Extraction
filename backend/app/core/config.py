@@ -102,11 +102,43 @@ class Settings(BaseSettings):
     # KPI extraction scans the document in windows rather than only the first
     # 4000 chars (which on a 10-K is just the SEC cover page). Window size must
     # leave room for the reply inside the model's loaded context.
-    KPI_WINDOW_CHARS: int = 24000
+    # Hard upper bound on a single extraction window. Normally it does not
+    # bind: the real size is measured per document against the loaded model
+    # (see services/windowing.py), which is both safer on table-dense text and
+    # far larger on prose. Kept as an escape hatch for forcing small windows.
+    KPI_WINDOW_CHARS: int = 120000
     KPI_MAX_WINDOWS: int = 40
-    # Windows are sent concurrently; match your inference server's parallel
-    # request setting (LM Studio shows it as "Parallel" on the loaded model).
-    KPI_CONCURRENCY: int = 6
+    # Windows are sent concurrently; this must not exceed the inference
+    # server's parallel slot count (LM Studio shows it as "Parallel" on the
+    # loaded model, and logs it as n_slots).
+    #
+    # Sizing note: with the classic per-slot KV cache, context x parallel is
+    # what has to fit in RAM - ctx 32768 x 6 slots needs ~22GB and simply fails
+    # to load on 24GB. With LM Studio's "Unified KV Cache" enabled (the server
+    # logs kv_unified = 'true') the slots draw from one shared pool instead, so
+    # raising concurrency no longer multiplies the KV footprint. The current
+    # setup runs 6 slots at ctx 16384 with unified KV on.
+    KPI_CONCURRENCY: int = 4
+
+    # --- Contextual retrieval -------------------------------------------
+    # Generate a one-sentence description of each chunk and prepend it before
+    # embedding and lexical indexing, so a chunk carries terms that situate it
+    # in the document rather than only the words it happens to contain.
+    #
+    # Off by default: this turns a ~15 second embedding stage into minutes,
+    # which should be a deliberate choice per environment rather than a silent
+    # regression in upload time.
+    CONTEXTUAL_CHUNKS: bool = False
+    # A small instruct model is enough to situate an excerpt and leaves the
+    # 7B free. Blank falls back to LLM_MODEL. Note this is the plain instruct
+    # build, not the VL (vision) or Coder variant of the same size.
+    CONTEXT_MODEL: str = "qwen2.5-3b-instruct"
+    # Measured on an M4 Pro against the loaded 7B: 12 chunks took 14.2s at
+    # concurrency 1, 6.2s at 2, and 6.9s at 4. The GPU saturates at two
+    # in-flight requests, so raising this past 2 buys nothing on this hardware
+    # even though LM Studio exposes 6 slots.
+    CONTEXT_CONCURRENCY: int = 4
+    CONTEXT_MAX_CHARS: int = 1500   # of the chunk shown to the context model
 
     # Vector database settings
     # Must match LLM_EMBEDDING_MODEL and the vector() dimension in init.sql.

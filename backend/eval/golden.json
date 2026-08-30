@@ -1,0 +1,49 @@
+{
+  "document": "FINAL Annual Report.pdf",
+  "note": "Every expected figure below was verified by hand against the extracted table rows during development. Pages are where the figure is printed; several appear on more than one page, and any of them counts as a hit.",
+  "cases": [
+    {
+      "id": "net-income-3y",
+      "question": "What was net income for each year?",
+      "pages": [57, 83, 84],
+      "figures": ["(640)", "4,057", "3,105"],
+      "must_not_contain": []
+    },
+    {
+      "id": "total-revenue-3y",
+      "question": "What was total revenue for each year?",
+      "pages": [68, 84],
+      "figures": ["219,024", "179,465", "165,835"],
+      "must_not_contain": []
+    },
+    {
+      "id": "diluted-eps",
+      "question": "What was diluted EPS?",
+      "pages": [57, 83],
+      "figures": ["0.02", "0.10", "0.08"],
+      "must_not_contain": ["0.11"]
+    },
+    {
+      "id": "exact-figure-lookup",
+      "question": "What is 219,024?",
+      "pages": [68, 84],
+      "figures": ["219,024"],
+      "must_not_contain": []
+    },
+    {
+      "id": "revenue-split",
+      "question": "How much of revenue was Platform revenue?",
+      "pages": [57, 68],
+      "figures": ["181,025"],
+      "must_not_contain": []
+    },
+    {
+      "id": "absent-fact",
+      "question": "What was the quarterly dividend per share in Q3?",
+      "pages": [],
+      "figures": [],
+      "expect_refusal": true,
+      "must_not_contain": []
+    }
+  ]
+}

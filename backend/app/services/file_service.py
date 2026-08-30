@@ -12,6 +12,7 @@ Rewritten for the consolidated platform:
 from __future__ import annotations
 
 import os
+import time
 import uuid
 import logging
 from typing import Any, Dict, List, Optional
@@ -100,12 +101,30 @@ class FileService:
 
         Committed immediately: the upload request is still in flight, so this is
         the only way a polling UI can see which step is running.
+
+        Each stage transition closes out the previous stage's wall clock into
+        ``timings``, so the UI can show where the time actually went rather
+        than only what is running now. ``stage_started_at`` plus the generic
+        ``items_done`` / ``items_total`` counters are what an ETA is computed
+        from, and they reset on every transition so a new stage never inherits
+        the previous one's totals.
         """
-        record.processing_metadata = {
-            **(record.processing_metadata or {}),
-            "stage": stage,
-            **extra,
-        }
+        meta = dict(record.processing_metadata or {})
+        now = time.time()
+        if meta.get("stage") != stage:
+            previous, started = meta.get("stage"), meta.get("stage_started_at")
+            if previous and started:
+                timings = dict(meta.get("timings") or {})
+                timings[previous] = round(
+                    timings.get(previous, 0.0) + now - started, 1)
+                meta["timings"] = timings
+            meta["stage_started_at"] = now
+            for key in ("items_done", "items_total", "items_label"):
+                meta.pop(key, None)
+        meta["stage"] = stage
+        meta["updated_at"] = now
+        meta.update(extra)
+        record.processing_metadata = meta
         flag_modified(record, "processing_metadata")
         await db.commit()
 
@@ -135,12 +154,13 @@ class FileService:
 
             kpi_count = 0
             await self._set_stage(record, db, "extracting_kpis",
-                                  kpi_windows_done=0, kpi_windows_total=None)
+                                  items_done=0, items_total=None,
+                                  items_label="window")
 
             async def _kpi_progress(done: int, total: int) -> None:
                 await self._set_stage(record, db, "extracting_kpis",
-                                      kpi_windows_done=done,
-                                      kpi_windows_total=total)
+                                      items_done=done, items_total=total,
+                                      items_label="window")
 
             try:
                 kpis = await self.ai_service.extract_kpis_from_text(
@@ -166,15 +186,33 @@ class FileService:
                                   kpis_extracted=kpi_count)
             embedding_count = 0
             try:
+                async def _embed_progress(phase: str, done: int,
+                                          total: int) -> None:
+                    await self._set_stage(record, db, phase,
+                                          items_done=done, items_total=total,
+                                          items_label="chunk")
+
                 embeddings = await self.embedding_service.create_document_embeddings(
-                    file_id, text_view, db
+                    file_id, text_view, db, progress_cb=_embed_progress
                 )
                 for emb in embeddings:
                     db.add(emb)
                 embedding_count = len(embeddings)
             except Exception as exc:
-                logger.warning("Embeddings skipped for file %s: %s", file_id, exc)
+                # Unlike KPI extraction, embeddings are not optional: without
+                # them the document is invisible to search, so reporting
+                # COMPLETED would hide a file that answers nothing.
+                logger.error("Embeddings failed for file %s: %s", file_id, exc)
+                record.status = FileStatus.FAILED
+                record.processing_metadata = {
+                    **(record.processing_metadata or {}),
+                    "stage": "embedding",
+                    "error": f"Embedding generation failed: {exc}",
+                }
+                await db.commit()
+                return
 
+            await self._set_stage(record, db, "done")
             record.status = FileStatus.COMPLETED
             record.processing_metadata = {
                 **(record.processing_metadata or {}),

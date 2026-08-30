@@ -412,10 +412,44 @@ async function vOverview(){
 
 /* ---------- files ---------- */
 const STAGES=[['extracting_tables','Tables'],['extracting_kpis','KPIs'],
-              ['embedding','Embeddings'],['done','Done']];
+              ['contextualizing','Context'],['embedding','Embeddings'],['done','Done']];
 const STAGE_LABEL={extracting_tables:'Extracting tables',tables_done:'Tables extracted',
-  extracting_kpis:'Extracting KPIs with the model',embedding:'Building embeddings',
+  extracting_kpis:'Extracting KPIs with the model',
+  contextualizing:'Writing chunk context',embedding:'Building embeddings',
   done:'Complete'};
+/* Durations are reported by the backend in seconds. */
+function fmtDur(s){
+  if(s===null||s===undefined) return '-';
+  s=Math.round(s);
+  if(s<60) return s+'s';
+  const m=Math.floor(s/60), r=s%60;
+  if(m<60) return m+'m'+(r?' '+r+'s':'');
+  return Math.floor(m/60)+'h '+(m%60)+'m';
+}
+/* ETA from the current stage's own throughput. Both timestamps come from the
+   server, so this never depends on the browser clock agreeing with it. */
+function etaOf(meta){
+  const m=meta||{};
+  if(!m.items_total||!m.stage_started_at||!m.updated_at) return null;
+  const done=m.items_done||0; if(done<=0) return null;
+  const el=m.updated_at-m.stage_started_at; if(el<=0) return null;
+  return Math.max(0,(m.items_total-done)*(el/done));
+}
+function totalTime(meta){
+  const m=meta||{}, v=Object.values(m.timings||{});
+  let t=v.length?v.reduce((a,b)=>a+b,0):0;
+  /* Add the stage still running, otherwise elapsed reads lower than the ETA
+     printed beside it. Both timestamps are the server's. */
+  if(m.stage&&m.stage!=='done'&&m.stage_started_at&&m.updated_at)
+    t+=Math.max(0,m.updated_at-m.stage_started_at);
+  return (v.length||t)?t:null;
+}
+/* Where the time actually went, stage by stage. */
+function timingList(meta){
+  const t=(meta||{}).timings||{}, ks=Object.keys(t);
+  if(!ks.length) return '';
+  return ks.map(k=>esc(STAGE_LABEL[k]||k)+' '+fmtDur(t[k])).join(' &middot; ');
+}
 function statusChip(f){
   const s=f.status, st=(f.processing_metadata||{}).stage;
   if(s==='completed') return '<span class="chip ok">completed</span>';
@@ -426,22 +460,22 @@ function statusChip(f){
 }
 /* Overall percent. Weights reflect measured wall-clock share of a large PDF:
    table extraction is fast, KPI windows dominate, embeddings are batched. */
-const STAGE_WEIGHT={extracting_tables:[0,15],tables_done:[15,15],
-  extracting_kpis:[15,70],embedding:[85,13],done:[100,0]};
+const STAGE_WEIGHT={extracting_tables:[0,10],tables_done:[10,2],
+  extracting_kpis:[12,45],contextualizing:[57,33],embedding:[90,10],done:[100,0]};
 function progressPct(meta){
   const m=meta||{}, st=m.stage||'';
   const w=STAGE_WEIGHT[st]; if(!w) return null;
   const [base,span]=w;
   if(st==='done') return 100;
-  let frac=0;
-  if(st==='extracting_kpis' && m.kpi_windows_total)
-    frac=Math.min(1,(m.kpi_windows_done||0)/m.kpi_windows_total);
+  /* Every long stage now reports the same generic counters, so one branch
+     covers KPI windows, context generation and embedding batches alike. */
+  const frac=m.items_total?Math.min(1,(m.items_done||0)/m.items_total):0;
   return Math.round(base + span*frac);
 }
 function progressDetail(meta){
   const m=meta||{};
-  if(m.stage==='extracting_kpis' && m.kpi_windows_total)
-    return 'window '+(m.kpi_windows_done||0)+' of '+m.kpi_windows_total;
+  if(m.items_total)
+    return (m.items_label||'item')+' '+(m.items_done||0)+' of '+m.items_total;
   if(m.stage==='embedding') return 'embedding chunks';
   if(m.stage==='extracting_tables') return 'parsing pages';
   return '';
@@ -450,7 +484,8 @@ function progressDetail(meta){
 /* real pipeline progress, driven by processing_metadata.stage from the backend */
 function stepper(meta){
   const cur=(meta||{}).stage||'';
-  const order=['extracting_tables','tables_done','extracting_kpis','embedding','done'];
+  const order=['extracting_tables','tables_done','extracting_kpis',
+               'contextualizing','embedding','done'];
   const at=order.indexOf(cur);
   return '<div class="steps">'+STAGES.map(([key,label],i)=>{
     const pos=order.indexOf(key);
@@ -469,7 +504,7 @@ function filesTable(list,acts){
     'tables, pull KPIs, and index the text for search.</div>';
   return '<div class="tw"><table><thead><tr><th>ID</th><th>Name</th><th>Type</th>'+
     '<th>Size</th><th>Organization</th><th>Uploaded by</th><th>Status</th>'+
-    '<th>Tables</th><th>KPIs</th><th>Chunks</th><th>Uploaded</th>'+
+    '<th>Tables</th><th>KPIs</th><th>Chunks</th><th>Time</th><th>Uploaded</th>'+
     (A?'<th></th>':'')+'</tr></thead><tbody>'+
     list.map(f=>{
       const m=f.processing_metadata||{};
@@ -483,7 +518,8 @@ function filesTable(list,acts){
       esc(nameOfUser(f.uploaded_by))+'</td><td>'+
       statusChip(f)+'</td><td>'+(m.tables_extracted??'-')+'</td><td>'+
       (m.kpis_extracted??'-')+'</td><td>'+(m.embeddings_created??'-')+
-      '</td><td>'+fmt(f.created_at)+'</td>'+
+      '</td><td'+(timingList(m)?' title="'+timingList(m).replace(/&middot;/g,'|')+'"':'')+
+      '>'+fmtDur(totalTime(m))+'</td><td>'+fmt(f.created_at)+'</td>'+
       (A?'<td class="acts">'+
         '<button data-t="'+f.id+'"'+(busy?' disabled':'')+'>Tables</button>'+
         '<button data-x="'+f.id+'"'+(busy?' disabled':'')+'>Extract KPIs</button>'+
@@ -495,15 +531,22 @@ function filesTable(list,acts){
     (A?list.filter(f=>f.status!=='completed'&&f.status!=='failed').map(f=>
       (function(){
         const m=f.processing_metadata||{}, pct=progressPct(m), det=progressDetail(m);
+        const eta=etaOf(m), spent=totalTime(m), log=timingList(m);
         return '<div class="act"><span class="spin"></span><div style="flex:1">'+
-          '<div style="display:flex;align-items:baseline;gap:8px">'+
+          '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'+
           '<b>#'+f.id+' '+esc(f.original_filename||f.filename)+'</b>'+
           (pct!==null?'<span class="chip live">'+pct+'%</span>':'')+
           (det?'<span style="color:var(--muted);font-size:12px">'+esc(det)+
-            '</span>':'')+'</div>'+
+            '</span>':'')+
+          (eta!==null?'<span class="chip">ETA '+fmtDur(eta)+'</span>':'')+
+          (spent!==null?'<span class="chip">elapsed '+fmtDur(spent)+'</span>':'')+
+          '</div>'+
           stepper(m)+
           (pct!==null?'<div class="bar det"><i style="width:'+pct+'%"></i></div>'
                      :'<div class="bar"><i></i></div>')+
+          /* Stage-by-stage log: what has finished and how long each took. */
+          (log?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+
+            log+'</div>':'')+
           '</div></div>';
       })()).join(''):'');
 }
@@ -693,6 +736,7 @@ function bubbleBot(entry){
   return '<div class="msg bot" data-ts="'+entry.ts+'"><div class="avatar">AI</div>'+
     '<div><div class="bubble">'+esc(entry.answer)+'</div>'+
     '<div class="meta">'+fmt(entry.ts)+
+      (entry.scope?' | '+esc(entry.scope):'')+
       (n?' | '+n+' source'+(n>1?'s':'')+' - click to view':'')+
     '</div></div></div>';
 }
@@ -746,17 +790,17 @@ async function vAsk(){
     'Chat with your documents. Sources for the selected answer are on the right.');
   wireHead();
   $('#body').innerHTML=
-    '<div class="row" style="margin-bottom:10px;align-items:center">'+
-      (ORGS.length>1?'<div style="flex:0 0 240px"><label class="f">Organization'+
-        '</label><select id="orgsel">'+ORGS.map(o=>'<option value="'+o.id+'"'+
+    '<div class="row" style="margin-bottom:10px;align-items:end">'+
+      '<div style="flex:0 0 220px"><label class="f">Company</label>'+
+        '<select id="orgsel">'+ORGS.map(o=>'<option value="'+o.id+'"'+
         (o.id===ORG?' selected':'')+'>'+esc(o.name)+'</option>').join('')+
-        '</select></div>':'')+
-      '<div style="flex:0 0 110px"><label class="f">Chunks</label>'+
+        '</select></div>'+
+      '<div style="flex:1;min-width:220px"><label class="f">Document</label>'+
+        '<select id="docsel"><option value="">Loading...</option></select></div>'+
+      '<div style="flex:0 0 100px"><label class="f">Chunks</label>'+
         '<input id="tk" type="number" value="5" min="1" max="20"></div>'+
-      '<div id="corpus" style="align-self:center"></div>'+
-      '<div style="margin-left:auto;align-self:center">'+
-        '<button id="chatClear" style="padding:5px 10px;font-size:12px">'+
-        'Clear chat</button></div>'+
+      '<div style="flex:0;align-self:center"><button id="chatClear" '+
+        'style="padding:7px 11px;font-size:12px">Clear chat</button></div>'+
     '</div>'+
     '<div class="chatwrap">'+
       '<div class="chat"><div class="thread" id="thread"></div>'+
@@ -774,15 +818,21 @@ async function vAsk(){
         '<div class="srcq" id="srcq"></div>'+
         '<div class="srclist" id="srclist"></div></div>'+
     '</div>';
-  wireOrg();
+  // Changing company re-renders the view, which reloads that company's docs.
+  const os=$('#orgsel');
+  if(os) os.onchange=()=>{ ORG=+os.value; localStorage.setItem('kpi_org',ORG);
+                           render(); };
   paintThread();
 
   CURRENT=async()=>{
     const files=await api('/files/?limit=500&organization_id='+ORG);
-    const done=files.filter(f=>f.status==='completed').length;
-    const n=$('#corpus');
-    if(n) n.innerHTML='<span class="chip'+(done?' live':'')+'">'+done+
-      ' document(s) indexed</span>';
+    const ready=files.filter(f=>f.status==='completed');
+    const sel=$('#docsel'); if(!sel) return;
+    const keep=sel.value;                       // don't clobber the user's pick
+    sel.innerHTML='<option value="">All documents ('+ready.length+')</option>'+
+      ready.map(f=>'<option value="'+f.id+'">'+
+        esc(f.original_filename||f.filename)+'</option>').join('');
+    if(keep && [...sel.options].some(o=>o.value===keep)) sel.value=keep;
   };
   await refreshNow(false); startTick();
 
@@ -813,8 +863,12 @@ async function vAsk(){
     try{
       const r=await api('/files/ask',{method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({question:q,organization_id:ORG,top_k:+$('#tk').value})});
+        body:JSON.stringify({question:q,organization_id:ORG,
+          top_k:+$('#tk').value,
+          file_ids: $('#docsel').value ? [+$('#docsel').value] : null})});
       const entry={ ts:Date.now(), q:q, answer:r.answer,
+        scope: $('#docsel').selectedOptions[0]
+                 ? $('#docsel').selectedOptions[0].textContent : '',
         sources:(r.sources||[]).map(x=>({
           filename:x.filename,
           page:(x.chunk_metadata||{}).page_number||null,
@@ -852,9 +906,20 @@ async function vKpis(){
   wireOrg();
   CURRENT=async()=>{
     const k=await api('/kpis/?organization_id='+ORG);
-    $('#kl').innerHTML=k.length?'<div class="tw"><table><thead><tr><th>ID</th><th>Name</th>'+
+    $('#kl').innerHTML=k.length?
+      '<div class="row" style="align-items:center;margin-bottom:10px">'+
+        '<div style="flex:0"><button class="d" id="kdel" disabled>'+
+          'Delete selected</button></div>'+
+        '<div style="flex:0;color:var(--muted);font-size:12px" id="ksel">'+
+          'none selected</div></div>'+
+      '<div class="tw"><table><thead><tr>'+
+      '<th style="width:28px"><input type="checkbox" id="kall" '+
+        'title="Select all"></th>'+
+      '<th>ID</th><th>Name</th>'+
       '<th>Category</th><th>Current</th><th>Target</th><th>Unit</th><th>Created</th>'+
-      '<th></th></tr></thead><tbody>'+k.map(x=>'<tr><td>'+x.id+'</td><td>'+esc(x.name)+
+      '<th></th></tr></thead><tbody>'+k.map(x=>'<tr>'+
+      '<td><input type="checkbox" class="kchk" value="'+x.id+'"></td>'+
+      '<td>'+x.id+'</td><td>'+esc(x.name)+
       '</td><td><span class="chip">'+esc(x.category)+'</span></td><td>'+
       (x.current_value??'-')+'</td><td>'+(x.target_value??'-')+'</td><td>'+
       esc(x.unit||'-')+'</td><td>'+fmt(x.created_at)+'</td>'+
@@ -864,6 +929,37 @@ async function vKpis(){
       'Extraction writes to a per-file staging area. To bring those metrics '+
       'here, open <b>Files</b> and hit <code>-&gt; Curated</code> on a processed '+
       'file.</div>';
+    const boxes=()=>Array.from(document.querySelectorAll('.kchk'));
+    const picked=()=>boxes().filter(c=>c.checked).map(c=>+c.value);
+    function syncSel(){
+      const n=picked().length, all=boxes().length;
+      const del=$('#kdel'), head=$('#kall');
+      if(del){ del.disabled=!n;
+        del.textContent=n?('Delete selected ('+n+')'):'Delete selected'; }
+      if(head){ head.checked=n>0&&n===all;
+        /* Partial selection reads as neither on nor off. */
+        head.indeterminate=n>0&&n<all; }
+      const lbl=$('#ksel'); if(lbl) lbl.textContent=n?(n+' of '+all+' selected'):'none selected';
+    }
+    const kall=$('#kall');
+    if(kall) kall.onchange=()=>{ boxes().forEach(c=>{c.checked=kall.checked;}); syncSel(); };
+    $('#kl').onchange=e=>{ if(e.target.classList.contains('kchk')) syncSel(); };
+    const kdel=$('#kdel');
+    if(kdel) kdel.onclick=async()=>{
+      const ids=picked(); if(!ids.length) return;
+      if(!confirm('Delete '+ids.length+' KPI'+(ids.length>1?'s':'')+'?')) return;
+      kdel.disabled=true;
+      /* Sequential, not parallel: a partial failure should stop rather than
+         leave an unpredictable subset deleted, and the count is small. */
+      let ok=0, failed=null;
+      for(const id of ids){
+        try{ await api('/kpis/'+id,{method:'DELETE'}); ok++; }
+        catch(err){ failed=err.message; break; }
+      }
+      toast(failed?('Deleted '+ok+' of '+ids.length+': '+failed)
+                  :('Deleted '+ok), failed?'err':'ok');
+      await refreshNow(false);
+    };
     $('#kl').onclick=async e=>{
       const b=e.target.closest('button[data-dk]'); if(!b) return;
       if(!confirm('Delete KPI #'+b.dataset.dk+'?')) return;
@@ -871,6 +967,7 @@ async function vKpis(){
       }catch(err){ toast(err.message,'err'); }
       await refreshNow(false);
     };
+    syncSel();
   };
   await refreshNow(false); startTick();
 }
@@ -920,10 +1017,40 @@ async function vOrgs(){
   CURRENT=async()=>{
     const o=await api('/organizations/'); ORGS=o;
     $('#ol').innerHTML=o.length?'<div class="tw"><table><thead><tr><th>ID</th><th>Name</th>'+
-      '<th>Description</th><th>Created</th></tr></thead><tbody>'+o.map(x=>'<tr><td>'+
+      '<th>Description</th><th>Created</th><th></th></tr></thead><tbody>'+o.map(x=>'<tr><td>'+
       x.id+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.description||'-')+'</td><td>'+
-      fmt(x.created_at)+'</td></tr>').join('')+'</tbody></table></div>':
-      '<div class="empty">No organizations.</div>';
+      fmt(x.created_at)+'</td><td class="acts">'+
+      '<button class="d" data-do="'+x.id+'">Delete</button></td></tr>').join('')+
+      '</tbody></table></div>':'<div class="empty">No organizations.</div>';
+    $('#ol').onclick=async e=>{
+      const b=e.target.closest('button[data-do]'); if(!b) return;
+      const id=b.dataset.do;
+      if(!confirm('Delete organization #'+id+'?')) return;
+      b.disabled=true;
+      const finish=async()=>{
+        toast('Organization deleted','ok');
+        ORGS=await api('/organizations/');
+        /* The picker may have been pointing at the row just removed. */
+        if(!ORGS.find(o2=>o2.id===ORG)) ORG=ORGS.length?ORGS[0].id:0;
+      };
+      try{
+        await api('/organizations/'+id,{method:'DELETE'});
+        await finish();
+      }catch(err){
+        /* The refusal names exactly what is in the way, so put that in front
+           of the user and let them decide, rather than making them go and
+           count it themselves. */
+        const blocked=/still has/i.test(err.message||'');
+        if(blocked && confirm(err.message+'\n\nDelete organization #'+id+
+             ' AND all of that content? This cannot be undone.')){
+          try{
+            await api('/organizations/'+id+'?cascade=true',{method:'DELETE'});
+            await finish();
+          }catch(e2){ toast(e2.message,'err'); b.disabled=false; }
+        }else{ toast(err.message,'err'); b.disabled=false; }
+      }
+      await refreshNow(false);
+    };
   };
   await refreshNow(false); startTick();
 }

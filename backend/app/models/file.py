@@ -118,6 +118,26 @@ class DocumentEmbedding(Base):
     file = relationship("UploadedFile", back_populates="embeddings")
 
 
+class ChunkContext(Base):
+    """Generated one-line context for a chunk, keyed by the chunk's content.
+
+    Contextualising a corpus costs minutes of local inference, and re-chunking
+    rewrites every row of document_embeddings. Keying the cache on a hash of
+    the chunk text rather than on a chunk id means a change to chunking only
+    pays for the chunks whose text actually changed.
+    """
+
+    __tablename__ = "chunk_contexts"
+
+    content_hash = Column(String(64), primary_key=True)
+    # Part of the key, not just a record of it: a different model produces
+    # different context, so switching models has to regenerate rather than
+    # silently serve what the previous one wrote.
+    model = Column(String(128), primary_key=True)
+    context = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 # Pydantic models for API
 class FileBase(BaseModel):
     """Shared file fields."""

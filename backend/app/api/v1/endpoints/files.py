@@ -1,4 +1,5 @@
 """File upload and table/KPI extraction API endpoints."""
+import asyncio
 import json
 import logging
 import os
@@ -254,7 +255,62 @@ def _infer_category(name: str) -> KPICategory:
     return KPICategory.OTHER
 
 
-def _rerank(question: str, candidates: List[dict], top_k: int) -> List[dict]:
+def _label(c: dict) -> str:
+    """Human-readable citation for a chunk: filename and page."""
+    meta = c.get("chunk_metadata") or {}
+    page = meta.get("page_number")
+    return f"{c['filename']}" + (f", Page {page}" if page else "")
+
+
+def _source_key(chunk: dict) -> tuple:
+    """Identity of the document region a chunk came from.
+
+    Windows cut from the same table overlap by CHUNK_OVERLAP characters, so
+    neighbours are near-duplicates that rank almost identically and would
+    otherwise occupy several of the few slots an answer gets to see.
+    """
+    meta = chunk.get("chunk_metadata") or {}
+    page, table = meta.get("page_number"), meta.get("table_index")
+    if page is None and table is None:
+        # No provenance to group on - keep the chunk distinct rather than
+        # collapsing every unmarked chunk of a file into one.
+        return ("chunk", chunk.get("file_id"), chunk.get("chunk_index"))
+    return ("region", chunk.get("file_id"), page, table)
+
+
+def _dedupe_by_source(candidates: List[dict]) -> List[dict]:
+    """Keep only the best-ranked chunk from each document region.
+
+    Input is already ordered best-first by the hybrid search, so the first
+    chunk seen for a region is the one most similar to the question.
+    """
+    seen: set = set()
+    out: List[dict] = []
+    for cand in candidates:
+        key = _source_key(cand)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cand)
+    return out
+
+
+def _passage_text(chunk: dict, budget: int) -> str:
+    """Chunk text prepared for the judge: provenance stripped, then truncated.
+
+    Each stored chunk starts with a contextual prefix and, for tables, the
+    extractor's marker line. Repeating those across every passage spends the
+    judge's budget on boilerplate it already gets from the label, leaving too
+    little room for the figures that decide the ranking.
+    """
+    lines = chunk["content_chunk"].split("\n")
+    while lines and lines[0].lstrip().startswith("["):
+        lines.pop(0)
+    body = "\n".join(lines).strip() or chunk["content_chunk"]
+    return body[:budget]
+
+
+async def _rerank(question: str, candidates: List[dict], top_k: int) -> List[dict]:
     """Reorder retrieved chunks by relevance using the configured LLM.
 
     A cross-encoder (BGE, Cohere) is the textbook choice, but that means either
@@ -266,23 +322,39 @@ def _rerank(question: str, candidates: List[dict], top_k: int) -> List[dict]:
     if len(candidates) <= top_k:
         return candidates
 
+    # Fewer, distinct candidates means each one can afford more characters,
+    # which matters because the deciding detail is usually a figure partway
+    # into the passage rather than its opening line.
+    budget = 1400 if len(candidates) <= 12 else 900
     listing = "\n\n".join(
-        f"[{i}] {c['content_chunk'][:600]}" for i, c in enumerate(candidates)
+        f"[{i}] {_label(c)}\n{_passage_text(c, budget)}"
+        for i, c in enumerate(candidates)
     )
     client = openai.OpenAI(
         base_url=settings.LLM_BASE_URL,
         api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "local",
     )
     try:
-        completion = client.chat.completions.create(
+        # to_thread: the openai client is synchronous. Called directly from an
+        # async handler it blocks uvicorn's event loop for the whole rerank, so
+        # every other request stalls behind it.
+        completion = await asyncio.to_thread(
+            client.chat.completions.create,
             model=settings.LLM_MODEL,
             temperature=0,
             max_tokens=200,
             messages=[
                 {"role": "system", "content":
-                 "You rank passages by how directly they answer a question. "
-                 "Reply with ONLY a JSON array of passage indices, best first. "
-                 "No prose."},
+                 "You rank passages by how directly they answer a question.\n"
+                 "Rank higher: passages stating the exact line item asked "
+                 "about, with its figures and the period they belong to.\n"
+                 "Rank lower: passages that merely mention the topic, discuss "
+                 "a related but different line item, or give only narrative "
+                 "with no figures.\n"
+                 "A primary financial statement outranks a supporting note "
+                 "when both contain the figure.\n"
+                 "Reply with ONLY a JSON array of passage indices, best "
+                 "first. No prose."},
                 {"role": "user", "content":
                  f"Question: {question}\n\nPassages:\n{listing}\n\n"
                  f"Return the {top_k} most useful indices as a JSON array."},
@@ -331,7 +403,11 @@ async def ask_documents(
             similarity_threshold=body.similarity_threshold,
             db=db,
         )
-        chunks = _rerank(body.question, candidates, body.top_k)
+        # Collapse overlapping windows of the same table before ranking, so
+        # the judge chooses between distinct regions and the answer is never
+        # grounded in five near-copies of one passage.
+        candidates = _dedupe_by_source(candidates)
+        chunks = await _rerank(body.question, candidates, body.top_k)
     except Exception as err:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {err}") from err
 
@@ -341,11 +417,6 @@ async def ask_documents(
                    "lower the similarity threshold.",
             sources=[],
         )
-
-    def _label(c: dict) -> str:
-        meta = c.get("chunk_metadata") or {}
-        page = meta.get("page_number")
-        return f"{c['filename']}" + (f", Page {page}" if page else "")
 
     context = "\n\n---\n\n".join(
         f"[Source: {_label(c)}]\n{c['content_chunk']}" for c in chunks
@@ -464,6 +535,9 @@ class PromoteResponse(BaseModel):
 
     promoted: int
     skipped: int
+    # Why rows were skipped, so an empty curated list is diagnosable from the
+    # response instead of requiring a look at the staging table.
+    reasons: dict = {}
     message: str
 
 
@@ -498,16 +572,27 @@ async def promote_extracted_kpis(
     taken = {n for (n,) in existing.all()}
 
     promoted = 0
-    skipped = 0
+    reasons = {"unnamed": 0, "duplicate": 0, "low_confidence": 0, "no_value": 0}
     for row in extracted:
         name = (row.kpi_name or "").strip()
         conf = float(row.confidence_score or 0)
         # A KPI without a number is not a metric. The model also returns
         # narrative items ("Potential for stock price volatility"); those
         # belong in the staging table, never in the curated list.
-        if (not name or name in taken or conf < min_confidence
-                or row.kpi_value is None):
-            skipped += 1
+        # Reasons are counted separately: "skipped 24" gives no way to tell a
+        # confidence threshold that is set too high from rows that genuinely
+        # carry no figure.
+        if not name:
+            reasons["unnamed"] += 1
+            continue
+        if name in taken:
+            reasons["duplicate"] += 1
+            continue
+        if row.kpi_value is None:
+            reasons["no_value"] += 1
+            continue
+        if conf < min_confidence:
+            reasons["low_confidence"] += 1
             continue
         db.add(KPI(
             name=name[:255],
@@ -522,11 +607,23 @@ async def promote_extracted_kpis(
         promoted += 1
 
     await db.commit()
-    return PromoteResponse(
-        promoted=promoted, skipped=skipped,
-        message=f"Promoted {promoted} KPI(s); skipped {skipped} "
-                f"(no numeric value, duplicate, unnamed, or below confidence {min_confidence}).",
-    )
+
+    skipped = sum(reasons.values())
+    if not extracted:
+        message = ("Nothing to promote: this file has no extracted KPIs yet. "
+                   "Run Extract KPIs first.")
+    elif promoted:
+        message = f"Promoted {promoted} KPI(s); skipped {skipped}."
+    else:
+        detail = ", ".join(f"{n} {k.replace('_', ' ')}"
+                           for k, n in reasons.items() if n)
+        message = (f"Promoted nothing from {len(extracted)} extracted row(s): "
+                   f"{detail}.")
+        if reasons["low_confidence"]:
+            message += (f" The threshold is {min_confidence}; pattern-matched "
+                        "rows are scored 0.3 and need a lower one to promote.")
+    return PromoteResponse(promoted=promoted, skipped=skipped,
+                           reasons=reasons, message=message)
 
 
 @router.post("/{file_id}/extract-kpis")

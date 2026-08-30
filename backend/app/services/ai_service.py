@@ -7,7 +7,6 @@ import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-import urllib.request
 
 import numpy as np
 import openai
@@ -21,12 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.kpi import KPI, KPIHistory, KPIEmbedding
 from app.models.file import ExtractedKPI
+from app.services import windowing
 from app.services.embedding_service import EmbeddingService
 
 logger = logging.getLogger(__name__)
 
 # Tokens consumed by the KPI instruction block that wraps every window.
-PROMPT_OVERHEAD_TOKENS = 800
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
@@ -50,63 +49,9 @@ def _with_think_prefill(
     return [*messages, tail]
 
 
-def _detect_context_chars(base_url: str, model: str, reply_tokens: int) -> Optional[int]:
-    """Ask the local server how much context the model actually has loaded.
-
-    LM Studio silently re-loads a model at its default context (often 8192)
-    after a JIT restart, so a hardcoded window size can start overflowing
-    mid-run. Sizing from the live value makes that self-correcting.
-    Returns a char budget, or None if the server does not report one.
-    """
-    try:
-        endpoint = base_url.rstrip("/")
-        if endpoint.endswith("/v1"):
-            endpoint = endpoint[:-3]
-        with urllib.request.urlopen(endpoint + "/api/v0/models", timeout=3) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception:  # not LM Studio, or unreachable - caller falls back
-        return None
-
-    for entry in data.get("data", []):
-        if entry.get("id") == model and entry.get("state") != "not-loaded":
-            ctx = entry.get("loaded_context_length")
-            if not ctx:
-                return None
-            # Convert the remaining token budget into characters.
-            # 3 chars/token holds for prose but NOT for financial tables:
-            # dense digits, commas and tabs measured ~2.05 chars/token on a
-            # 10-K, which overflowed every window. 1.8 leaves real headroom.
-            # PROMPT_OVERHEAD covers the instruction block wrapped around each
-            # window; without it the reservation is short by ~600 tokens.
-            usable = max(int(ctx) - reply_tokens - PROMPT_OVERHEAD_TOKENS, 512)
-            return int(usable * 1.8)
-    return None
-
-
-def _split_windows(text: str, size: int, max_windows: int) -> List[str]:
-    """Cut the document into model-sized windows, preferring table boundaries."""
-    if not text:
-        return []
-    blocks = text.split("\n[page ")
-    blocks = [blocks[0]] + [f"[page {b}" for b in blocks[1:]]
-
-    windows: List[str] = []
-    current = ""
-    for block in blocks:
-        if current and len(current) + len(block) > size:
-            windows.append(current)
-            current = block
-        else:
-            current = f"{current}\n{block}" if current else block
-        # A single table larger than one window is split on raw length.
-        while len(current) > size:
-            windows.append(current[:size])
-            current = current[size:]
-    if current.strip():
-        windows.append(current)
-    return windows[:max_windows]
-
-
+# Fraction of the token budget a window is allowed to fill. The calibration
+# sample is representative, not exhaustive: a window can still be denser than
+# the document average, and this is the room that leaves for it.
 def _kpi_prompt(window: str) -> str:
     """Build the KPI-extraction prompt for one window of document text."""
     return f"""
@@ -155,6 +100,46 @@ def _kpi_prompt(window: str) -> str:
     """
 
 
+# A document states a figure once, in one scale: "$219 million" in prose,
+# "219,024" under a "(in thousands)" heading. Models routinely answer with the
+# expanded number instead, which is arithmetic the source never performed.
+_SCALES = ((1_000_000_000, "billion", "billions"),
+           (1_000_000, "million", "millions"),
+           (1_000, "thousand", "thousands"))
+
+
+def _ground_value(value: Optional[float], text: str,
+                  unit: Optional[str]) -> Optional[tuple]:
+    """Reconcile a model's figure with the one actually printed in the source.
+
+    Returns ``(value, unit)`` to store, or None when the figure cannot be
+    found at all and the row should be dropped.
+
+    A value present verbatim is taken as-is. Otherwise the model has most
+    likely expanded a scaled figure, so each scale is tried in turn: the
+    printed number must appear in the window AND that window must actually use
+    the scale word, which is what stops a bare "219" matching by luck. The
+    printed figure is what gets stored - the source is the authority on how it
+    states its own numbers, and the scale moves into the unit.
+    """
+    if value is None:
+        return (None, unit)
+    if _value_in_text(value, text):
+        return (value, unit)
+
+    lowered = text.lower()
+    for factor, singular, plural in _SCALES:
+        if abs(value) < factor:
+            continue
+        if singular not in lowered and plural not in lowered:
+            continue
+        scaled = value / factor
+        if _value_in_text(scaled, text):
+            merged = f"{unit} {plural}".strip() if unit else plural
+            return (scaled, merged[:50])
+    return None
+
+
 def _value_in_text(value: Optional[float], text: str) -> bool:
     """Is this number actually present in the text the model was shown?
 
@@ -174,6 +159,17 @@ def _value_in_text(value: Optional[float], text: str) -> bool:
     else:
         candidates.add(f"{value:g}")
         candidates.add(f"{value:.2f}".rstrip("0").rstrip("."))
+    # Financial statements write negatives in parentheses, so a reported -640
+    # has to be matched against "(640)". Without this every loss in the
+    # document fails the check and is discarded as ungrounded.
+    if value < 0:
+        magnitude = abs(value)
+        bare = (str(int(magnitude)) if float(magnitude).is_integer()
+                else f"{magnitude:g}")
+        grouped = (f"{int(magnitude):,}" if float(magnitude).is_integer()
+                   else bare)
+        candidates.update({f"({bare})", f"({grouped})",
+                           f"({bare}", f"({grouped}"})
     return any(c and (c in text or re.sub(r"[,\s]", "", c) in digits)
                for c in candidates)
 
@@ -341,21 +337,24 @@ class AIService:
                 continue
 
             value = _coerce_number(kpi_data.get("kpi_value"))
-            if not _value_in_text(value, window):
+            unit = (str(kpi_data.get("kpi_unit"))[:50]
+                    if kpi_data.get("kpi_unit") else None)
+            grounded = _ground_value(value, window, unit)
+            if grounded is None:
                 logger.warning(
                     "Dropping ungrounded KPI %r=%s (not present in window %d)",
                     name, value, idx + 1,
                 )
                 dropped += 1
                 continue
+            value, unit = grounded
 
             seen.add(name.lower())
             out.append(ExtractedKPI(
                 file_id=file_id,
                 kpi_name=name[:255],
                 kpi_value=value,
-                kpi_unit=(str(kpi_data.get("kpi_unit"))[:50]
-                          if kpi_data.get("kpi_unit") else None),
+                kpi_unit=unit,
                 confidence_score=kpi_data.get("confidence_score", 0.5),
                 extraction_method="ai",
                 raw_text="",
@@ -374,25 +373,36 @@ class AIService:
         stored "KPIs" were confident fabrications. This walks the document in
         windows, extracts from each, and merges the results by name.
         """
+        # Repair pdfplumber's glyph-level artefacts before the model reads the
+        # document. Figures arrive split across tabs ("4,0\t57", "$7\t3.6"),
+        # and a model shown those has to guess at the real value; the guess is
+        # then indistinguishable from a correct reading. Retrieval already
+        # cleans its text this way, so this also keeps the two views of the
+        # same document consistent.
+        text = EmbeddingService.clean_text(text)
+
         extracted_kpis: List[ExtractedKPI] = []
         seen: set = set()
         any_success = False
         dropped = 0
 
         reply_tokens = 2000
-        detected = _detect_context_chars(
-            settings.LLM_BASE_URL, settings.LLM_MODEL, reply_tokens
+        detected, budget_tokens, ratio = windowing.window_chars(
+            settings.LLM_BASE_URL, settings.LLM_MODEL, reply_tokens, text
         )
+        # KPI_WINDOW_CHARS stays an upper bound, but the measured figure is
+        # what normally governs: it is the one that reflects this document.
         window_chars = min(settings.KPI_WINDOW_CHARS,
                            detected or settings.KPI_WINDOW_CHARS)
 
-        needed = _split_windows(text, window_chars, 10**6)
+        needed = windowing.split_windows(text, window_chars, 10**6)
         windows = needed[: settings.KPI_MAX_WINDOWS]
         logger.info(
             "KPI extraction: %d/%d window(s) of %d chars over %d chars "
-            "(model context allows ~%s chars)",
+            "(measured %s chars/token, %s prompt tokens available)",
             len(windows), len(needed), window_chars, len(text),
-            detected if detected else "unknown",
+            f"{ratio:.2f}" if ratio else "unknown",
+            budget_tokens if budget_tokens else "unknown",
         )
         if len(needed) > len(windows):
             logger.warning(
@@ -460,8 +470,17 @@ class AIService:
             logger.info("Dropped %d ungrounded KPI(s) not found in the source text",
                         dropped)
 
-        if not any_success:
-            logger.warning("All AI windows failed; falling back to pattern matching")
+        # any_success only says the calls returned. When every row is then
+        # dropped as ungrounded the result is an empty staging table reported
+        # as a successful run, and the fallback never engages - so test what
+        # was actually produced, not whether the model replied.
+        if not extracted_kpis:
+            logger.warning(
+                "AI extraction yielded no usable KPIs (%s, %d dropped as "
+                "ungrounded); falling back to pattern matching",
+                "no window succeeded" if not any_success else "all windows replied",
+                dropped,
+            )
             extracted_kpis.extend(self._extract_kpis_by_pattern(text, file_id))
 
         return extracted_kpis

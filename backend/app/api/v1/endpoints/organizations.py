@@ -1,9 +1,12 @@
 """Organization endpoints: CRUD operations and user-organization membership management."""
 
+import logging
+import os
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
@@ -14,6 +17,10 @@ from app.models.organization import (
     UserOrganizationResponse, OrganizationWithUsers
 )
 from app.models.user import User
+from app.models.file import UploadedFile
+from app.models.kpi import KPI
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -172,10 +179,17 @@ async def update_organization(
 @router.delete("/{organization_id}")
 async def delete_organization(
     organization_id: int,
+    cascade: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.ADMIN))
 ):
-    """Delete an organization (admin only)."""
+    """Delete an organization (admin only).
+
+    Refuses by default while the organization still owns files or curated
+    KPIs, naming all of them so the caller knows the full extent in one go.
+    Pass ``cascade=true`` to delete that content along with it - the caller is
+    expected to have confirmed against the counts from the refusal first.
+    """
     result = await db.execute(
         select(Organization).where(Organization.id == organization_id)
     )
@@ -184,6 +198,55 @@ async def delete_organization(
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
 
+    # Report what is holding the organization rather than letting the delete
+    # hit a foreign key and surface as an opaque 500. Say all of it at once, so
+    # the caller can clear everything in one pass instead of discovering each
+    # blocker on a separate attempt.
+    blockers = []
+    for label, table in (("file", "uploaded_files"), ("KPI", "kpis")):
+        count = await db.scalar(
+            sql_text(f"SELECT count(*) FROM {table} WHERE organization_id = :oid"),
+            {"oid": organization_id},
+        )
+        if count:
+            blockers.append(f"{count} {label}{'s' if count != 1 else ''}")
+    if blockers and not cascade:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Organization still has {', '.join(blockers)}. "
+                    "Delete those first, or retry with cascade to remove "
+                    "them along with it."),
+        )
+
+    if cascade:
+        # Remove the files through the ORM so the tables, extracted KPIs and
+        # embeddings hanging off each one go with them, and take the stored
+        # upload off disk too - a raw DELETE would orphan both.
+        files = (await db.execute(
+            select(UploadedFile).where(
+                UploadedFile.organization_id == organization_id)
+        )).scalars().all()
+        for stored in files:
+            if stored.file_path and os.path.exists(stored.file_path):
+                os.remove(stored.file_path)
+            await db.delete(stored)
+        curated = (await db.execute(
+            select(KPI).where(KPI.organization_id == organization_id)
+        )).scalars().all()
+        for kpi in curated:
+            await db.delete(kpi)
+        await db.flush()
+        logger.info("Cascade delete of organization %s removed %d file(s), "
+                    "%d curated KPI(s)", organization_id, len(files),
+                    len(curated))
+
+    # Memberships are not user data to preserve - creating an organization
+    # enrols its creator, so treating a membership as a blocker would make
+    # every new organization permanently undeletable. They go with the row.
+    await db.execute(
+        sql_text("DELETE FROM user_organizations WHERE organization_id = :oid"),
+        {"oid": organization_id},
+    )
     await db.delete(organization)
     await db.commit()
 

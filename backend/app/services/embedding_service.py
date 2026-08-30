@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.file import DocumentEmbedding, UploadedFile
+from app.services import bm25
+from app.services.context_service import ContextService, content_hash
 from app.models.kpi import KPIEmbedding, KPI
 
 logger = logging.getLogger(__name__)
@@ -42,9 +44,14 @@ class EmbeddingService:
             )
             return response.data[0].embedding
         except Exception as err:
+            # Never fall back to a zero vector. pgvector's cosine distance
+            # against a zero vector is NaN, Postgres orders NaN as LARGER than
+            # every real number, so corrupt rows survive the similarity
+            # threshold and sort to the TOP of every search - and the NaN then
+            # fails JSON serialisation, surfacing as an opaque HTTP 500.
+            # Failing here instead keeps the index honest.
             logger.error("Error generating embedding: %s", err)
-            # Return zero vector as fallback
-            return [0.0] * self.vector_dimension
+            raise RuntimeError(f"Embedding generation failed: {err}") from err
 
     # pdfplumber positions glyphs, not words: column gaps become runs of tabs
     # and words get split mid-token ("Total ne\tt sales", "Sept\tember 27").
@@ -58,6 +65,38 @@ class EmbeddingService:
     _SPLIT_WORD = re.compile(r"([A-Za-z])\t([A-Za-z]{1,8})(?=[\s\t]|$)")
     _BLANK_RUN = re.compile(r"\n{3,}")
 
+    # Figures get broken the same way words do ("4,0\t57", "$7\t3.6", "2\t2%"),
+    # but the single-tab test that works for words is not safe for digits: two
+    # adjacent year headers are written "2025\t2024" with one tab and must stay
+    # apart. These decide the question on numeric well-formedness instead.
+    _NUMBER_PAIR = re.compile(r"(\d[\d,]*)(\t+)(\d[\d,]*)")
+    _GROUPED_NUMBER = re.compile(r"^\d{1,3}(,\d{3})*$")
+    _YEARISH = re.compile(r"^(\d{4})[,.]?$")
+
+    @classmethod
+    def _rejoin_number(cls, match: "re.Match") -> str:
+        """Fuse a number split across a tab, or leave a column break alone."""
+        left, tabs, right = match.group(1), match.group(2), match.group(3)
+
+        # "December 31, 2025" is two tokens, not one number: keep them apart
+        # but drop the tab, so the date reads normally.
+        year = cls._YEARISH.match(right)
+        if left.endswith(",") and year and 1900 <= int(year.group(1)) <= 2100:
+            return f"{left} {right}"
+
+        joined = left + right
+        core = joined.rstrip(",.")
+        if "," in core:
+            # Fuse only when the result is correctly thousand-grouped. This is
+            # what rejects a genuine column break like "219,024" + "100", whose
+            # concatenation "219,024100" is not a valid figure.
+            return joined if cls._GROUPED_NUMBER.match(core) else match.group(0)
+        if len(tabs) > 1:
+            return match.group(0)      # a run of tabs is a column boundary
+        # Nothing to validate against without a comma, so allow only short
+        # results. This is what keeps the year headers "2025" and "2024" apart.
+        return joined if len(core) <= 4 else match.group(0)
+
     @classmethod
     def clean_text(cls, text: str) -> str:
         """Repair pdfplumber artefacts without destroying column structure."""
@@ -65,6 +104,14 @@ class EmbeddingService:
         # Applied twice: some words are split more than once.
         for _ in range(2):
             text = cls._SPLIT_WORD.sub(r"\1\2", text)
+        # Repeated: one pass fuses "2" + "025", a second reaches "2025" + ",".
+        # Must run before the tab runs collapse, since the run length is part
+        # of how a column break is told from a split figure.
+        for _ in range(3):
+            repaired = cls._NUMBER_PAIR.sub(cls._rejoin_number, text)
+            if repaired == text:
+                break
+            text = repaired
         text = cls._TAB_RUN.sub("\t", text)      # keep ONE tab as a column break
         text = cls._SPACE_RUN.sub(" ", text)
         text = cls._BLANK_RUN.sub("\n\n", text)
@@ -74,6 +121,68 @@ class EmbeddingService:
     # ("In millions"), "Years ended", and the column headers. These must ride
     # along with every chunk of that table.
     HEADER_LINES = 12
+
+    # A block needs at least this many genuine data rows before it is treated
+    # as a table. Below it, the block is prose that pdfplumber happened to
+    # return from extract_tables().
+    MIN_NUMERIC_ROWS = 3
+
+    _CID_ARTEFACT = re.compile(r"\(cid:\d+\)")
+    # A cell holding only a number, allowing the accounting decorations that
+    # surround figures in financial statements: $ , . % and ( ) for negatives.
+    _NUMERIC_CELL = re.compile(r"^[\s$(]*[\d,]+(?:\.\d+)?\)?[%]?$")
+
+    @classmethod
+    def _is_garbage(cls, body: str) -> bool:
+        """True when a block is font-decode noise rather than text.
+
+        pdfplumber emits runs of "(cid:NN)" when a PDF embeds a font with no
+        ToUnicode map, so the glyphs cannot be resolved to characters. The
+        result is not text in any language; embedding it only produces vectors
+        that compete for top-k slots in every subsequent search.
+        """
+        hits = cls._CID_ARTEFACT.findall(body)
+        if not hits:
+            return False
+        return sum(len(h) for h in hits) / max(len(body), 1) > 0.20
+
+    @classmethod
+    def _is_tabular(cls, body: str) -> bool:
+        """True when a block is a real data table, not tab-broken prose.
+
+        A digit ratio is not enough: financial tables are routinely introduced
+        by a sentence or two, which dilutes it below any workable threshold.
+        Counting rows that hold two or more purely numeric cells tests the
+        structure instead, which is what actually distinguishes the two.
+        """
+        rows = 0
+        for line in body.split("\n"):
+            cells = [c.strip() for c in line.split("\t") if c.strip()]
+            if len(cells) < 2:
+                continue
+            if sum(1 for c in cells if cls._NUMERIC_CELL.match(c)) >= 2:
+                rows += 1
+                if rows >= cls.MIN_NUMERIC_ROWS:
+                    return True
+        return False
+
+    @staticmethod
+    def _window(body: str, header: str, chunk_size: int,
+                overlap: int) -> List[str]:
+        """Slide a fixed character window over body, repeating header on each."""
+        if not body.strip():
+            return []
+        budget = max(chunk_size - len(header) - 1, chunk_size // 2)
+        pieces: List[str] = []
+        start = 0
+        while start < len(body):
+            piece = body[start : start + budget]
+            pieces.append(f"{header}\n{piece}" if header else piece)
+            nxt = start + budget - overlap
+            if nxt <= start:
+                break
+            start = nxt
+        return pieces
 
     _MARKER = re.compile(
         r"^\[page (?P<page>\d+) table (?P<table>\d+)(?: via (?P<source>[^\]]+))?\]"
@@ -132,81 +241,74 @@ class EmbeddingService:
 
         out: List[Dict[str, Any]] = []
         for block in self._split_blocks(self.clean_text(text)):
-            meta = self._block_meta(block)
-            meta["heading"] = self._heading_of(block)
             lines = block.split("\n")
-            header = "\n".join(lines[: self.HEADER_LINES]).strip()
-            body = "\n".join(lines[self.HEADER_LINES :])
+            rest = "\n".join(lines[1:])          # everything after the marker
 
-            pieces: List[str] = []
-            if not body.strip():
-                pieces.append(block[:chunk_size])
-            else:
-                budget = max(chunk_size - len(header) - 1, chunk_size // 2)
-                start = 0
-                while start < len(body):
-                    piece = body[start : start + budget]
-                    pieces.append(f"{header}\n{piece}" if header else piece)
-                    nxt = start + budget - overlap
-                    if nxt <= start:
-                        break
-                    start = nxt
-
-            # Contextual prefix: a chunk separated from its document loses the
-            # only clues about what it describes. Stating the source, page and
-            # section up front costs a few tokens and lets the model cite them.
-            bits = []
-            if source_file:
-                bits.append(f"Document: {source_file}")
-            if meta.get("page_number") is not None:
-                bits.append(f"Page {meta['page_number']}")
-            if meta.get("heading"):
-                bits.append(f"Section: {meta['heading']}")
-            prefix = f"[{' | '.join(bits)}]\n" if bits else ""
-
-            for piece in pieces:
-                if piece.strip():
-                    out.append({"text": prefix + piece, **meta})
-        return out
-
-    async def chunk_text(self, text: str, chunk_size: Optional[int] = None,
-                         overlap: Optional[int] = None) -> List[str]:
-        """Split text into chunks, keeping each table's header with its rows.
-
-        A plain character-window split orphans the header block (table title,
-        "(In millions)", and the year columns) from the numeric rows, so a
-        retrieved chunk arrives with unlabelled columns and the model guesses
-        the period and units. Every chunk therefore repeats its table's header.
-        """
-        if chunk_size is None:
-            chunk_size = settings.CHUNK_SIZE
-        if overlap is None:
-            overlap = settings.CHUNK_OVERLAP
-
-        chunks: List[str] = []
-        for block in self._split_blocks(text):
-            lines = block.split("\n")
-            header = "\n".join(lines[: self.HEADER_LINES]).strip()
-            body = "\n".join(lines[self.HEADER_LINES :])
-
-            if not body.strip():
-                chunks.append(block[:chunk_size])
+            if self._is_garbage(rest):
                 continue
 
-            budget = max(chunk_size - len(header) - 1, chunk_size // 2)
-            start = 0
-            while start < len(body):
-                piece = body[start : start + budget]
-                chunks.append(f"{header}\n{piece}" if header else piece)
-                nxt = start + budget - overlap
-                if nxt <= start:
-                    break
-                start = nxt
+            meta = self._block_meta(block)
+            meta["heading"] = self._heading_of(block)
 
-        return [c for c in chunks if c.strip()]
+            # Repeating the leading lines on every chunk is what keeps a
+            # table's title, units and column headers attached to its numeric
+            # rows. That is only correct for real tables: extract_tables() also
+            # returns plain paragraphs, and there the same trick duplicates
+            # body text onto every chunk, filling the index with near-identical
+            # neighbours that crowd each other out of the top-k.
+            header, body = "", rest
+            meta["tabular"] = self._is_tabular(rest)
+            if meta["tabular"]:
+                header = "\n".join(lines[: self.HEADER_LINES]).strip()
+                body = "\n".join(lines[self.HEADER_LINES :])
+                if not body.strip():   # table shorter than the header window
+                    header, body = "", rest
+
+            pieces = self._window(body, header, chunk_size, overlap)
+            if not pieces:
+                continue
+
+            # The contextual prefix is composed by compose_chunk() rather than
+            # here, so a generated context line can take the place of the
+            # mechanical heading before the text is indexed.
+            for piece in pieces:
+                if piece.strip():
+                    out.append({"text": piece, **meta})
+        return out
+
+    @staticmethod
+    def compose_chunk(piece: str, source_file: Optional[str],
+                      meta: Dict[str, Any],
+                      context: Optional[str] = None) -> str:
+        """Prepend provenance to a chunk before it is embedded and indexed.
+
+        A chunk separated from its document loses the only clues about what it
+        describes, so stating the source and page up front costs a few tokens
+        and lets the model cite them.
+
+        Which label follows depends on the block. For a table, the first line
+        really is the table's title and is worth keeping. For prose it is just
+        the opening words of a paragraph, so a generated context line replaces
+        it outright rather than sitting alongside it.
+        """
+        bits = []
+        if source_file:
+            bits.append(f"Document: {source_file}")
+        if meta.get("page_number") is not None:
+            bits.append(f"Page {meta['page_number']}")
+        if context and not meta.get("tabular"):
+            bits.append(f"Context: {context}")
+        else:
+            if meta.get("heading"):
+                bits.append(f"Section: {meta['heading']}")
+            if context:
+                bits.append(f"Context: {context}")
+        prefix = f"[{' | '.join(bits)}]\n" if bits else ""
+        return prefix + piece
 
     async def create_document_embeddings(
-        self, file_id: int, text: str, db: AsyncSession
+        self, file_id: int, text: str, db: AsyncSession,
+        progress_cb=None,
     ) -> List[DocumentEmbedding]:
         """Create embeddings for document chunks."""
         source_file = None
@@ -221,7 +323,29 @@ class EmbeddingService:
 
         # Chunk with provenance so each row records its page / table / heading.
         pieces = await self.chunk_document(text, source_file=source_file)
-        chunks = [p["text"] for p in pieces]
+
+        # Optional contextual retrieval pass. Generation is minutes of local
+        # inference, so it runs only when explicitly enabled, and a failure
+        # here degrades findability rather than failing the upload.
+        contexts: Dict[str, str] = {}
+        if settings.CONTEXTUAL_CHUNKS:
+            async def _ctx_progress(done: int, total: int) -> None:
+                if progress_cb:
+                    await progress_cb("contextualizing", done, total)
+            try:
+                contexts = await ContextService().contextualize(
+                    [p["text"] for p in pieces],
+                    source_file or f"file {file_id}", db,
+                    progress_cb=_ctx_progress,
+                )
+            except Exception as err:
+                logger.warning("Contextualization skipped: %s", err)
+
+        chunks = [
+            self.compose_chunk(p["text"], source_file, p,
+                               contexts.get(content_hash(p["text"])))
+            for p in pieces
+        ]
         embeddings = []
 
         # Embed in batches rather than one HTTP round-trip per chunk. A large
@@ -233,6 +357,10 @@ class EmbeddingService:
             vectors.extend(
                 await self.batch_create_embeddings(chunks[start:start + batch_size])
             )
+            if progress_cb:
+                await progress_cb("embedding",
+                                  min(start + batch_size, len(chunks)),
+                                  len(chunks))
 
         for i, chunk in enumerate(chunks):
             embedding_vector = vectors[i]
@@ -252,6 +380,8 @@ class EmbeddingService:
                     "table_index": pieces[i].get("table_index"),
                     "parser": pieces[i].get("parser"),
                     "heading": pieces[i].get("heading"),
+                    "tabular": pieces[i].get("tabular"),
+                    "context": contexts.get(content_hash(pieces[i]["text"])),
                 }
             )
             embeddings.append(doc_embedding)
@@ -296,7 +426,7 @@ class EmbeddingService:
             query=query, organization_id=organization_id, file_ids=file_ids,
             limit=candidates, similarity_threshold=similarity_threshold, db=db,
         )
-        keyword_hits = await self.search_documents_keyword(
+        keyword_hits = await self.search_documents_bm25(
             query=query, organization_id=organization_id, file_ids=file_ids,
             limit=candidates, db=db,
         )
@@ -316,7 +446,7 @@ class EmbeddingService:
         ranked = sorted(fused.values(), key=lambda h: h["rrf_score"], reverse=True)
         return ranked[:limit]
 
-    async def search_documents_keyword(
+    async def search_documents_bm25(
         self,
         query: str,
         organization_id: int,
@@ -324,45 +454,87 @@ class EmbeddingService:
         limit: int = 10,
         db: Optional[AsyncSession] = None,
     ) -> List[Dict[str, Any]]:
-        """Full-text (keyword) search over chunks, ranked by ts_rank."""
-        sql = """
-        SELECT
-            de.content_chunk,
-            de.file_id,
-            uf.original_filename,
-            de.chunk_index,
-            de.chunk_metadata,
-            ts_rank(to_tsvector('english', de.content_chunk),
-                    websearch_to_tsquery('english', :q)) AS rank
-        FROM document_embeddings de
-        JOIN uploaded_files uf ON de.file_id = uf.id
-        WHERE uf.organization_id = :org_id
-          AND to_tsvector('english', de.content_chunk)
-              @@ websearch_to_tsquery('english', :q)
-        """
-        params: Dict[str, Any] = {"q": query, "org_id": organization_id,
-                                  "limit": limit}
-        if file_ids:
-            sql += " AND de.file_id = ANY(:file_ids)"
-            params["file_ids"] = list(file_ids)
-        sql += " ORDER BY rank DESC LIMIT :limit"
+        """Lexical search over chunks, ranked by Okapi BM25.
 
+        Replaces the ts_rank implementation kept commented out below. See
+        app/services/bm25.py for why: ts_rank has no IDF, websearch_to_tsquery
+        requires every term to be present, and the english configuration
+        splits figures on their thousands separators.
+        """
+        if db is None:
+            return []
         try:
-            result = await db.execute(sql_text(sql), params)
-            rows = result.fetchall()
-        except Exception as err:  # a malformed query should not kill retrieval
-            logger.warning("Keyword search failed: %s", err)
+            index = await bm25.get_index(db)
+            positions = index.search(query, organization_id, file_ids, limit)
+        except Exception as err:  # lexical search must never kill retrieval
+            logger.warning("BM25 search failed: %s", err)
             return []
 
-        return [{
-            "content_chunk": row[0],
-            "file_id": row[1],
-            "filename": row[2],
-            "chunk_index": row[3],
-            "chunk_metadata": row[4],
-            "similarity_score": 0.0,
-            "keyword_rank": float(row[5]),
-        } for row in rows]
+        results: List[Dict[str, Any]] = []
+        for rank, doc in enumerate(positions):
+            chunk, file_id, _org, filename, chunk_index, meta = index.rows[doc]
+            results.append({
+                "content_chunk": chunk,
+                "file_id": file_id,
+                "filename": filename,
+                "chunk_index": chunk_index,
+                "chunk_metadata": meta,
+                "similarity_score": 0.0,
+                "keyword_rank": float(len(positions) - rank),
+            })
+        return results
+
+    # Superseded by search_documents_bm25. Retained because the switch was made
+    # on measured behaviour rather than preference, and this is what to restore
+    # if the BM25 index ever has to come out.
+    #
+    # async def search_documents_keyword(
+    #     self,
+    #     query: str,
+    #     organization_id: int,
+    #     file_ids: Optional[List[int]] = None,
+    #     limit: int = 10,
+    #     db: Optional[AsyncSession] = None,
+    # ) -> List[Dict[str, Any]]:
+    #     """Full-text (keyword) search over chunks, ranked by ts_rank."""
+    #     sql = """
+    #     SELECT
+    #         de.content_chunk,
+    #         de.file_id,
+    #         uf.original_filename,
+    #         de.chunk_index,
+    #         de.chunk_metadata,
+    #         ts_rank(to_tsvector('english', de.content_chunk),
+    #                 websearch_to_tsquery('english', :q)) AS rank
+    #     FROM document_embeddings de
+    #     JOIN uploaded_files uf ON de.file_id = uf.id
+    #     WHERE uf.organization_id = :org_id
+    #       AND to_tsvector('english', de.content_chunk)
+    #           @@ websearch_to_tsquery('english', :q)
+    #     """
+    #     params: Dict[str, Any] = {"q": query, "org_id": organization_id,
+    #                               "limit": limit}
+    #     if file_ids:
+    #         sql += " AND de.file_id = ANY(:file_ids)"
+    #         params["file_ids"] = list(file_ids)
+    #     sql += " ORDER BY rank DESC LIMIT :limit"
+    #
+    #     try:
+    #         result = await db.execute(sql_text(sql), params)
+    #         rows = result.fetchall()
+    #     except Exception as err:  # a malformed query should not kill retrieval
+    #         logger.warning("Keyword search failed: %s", err)
+    #         return []
+    #
+    #     return [{
+    #         "content_chunk": row[0],
+    #         "file_id": row[1],
+    #         "filename": row[2],
+    #         "chunk_index": row[3],
+    #         "chunk_metadata": row[4],
+    #         "similarity_score": 0.0,
+    #         "keyword_rank": float(row[5]),
+    #     } for row in rows]
 
     async def search_documents(
         self,
@@ -407,7 +579,13 @@ class EmbeddingService:
             search_query += " AND de.file_id = ANY(:file_ids)"
             params["file_ids"] = list(file_ids)
 
+        # The NOT ... = 'NaN' guard drops degenerate (zero) stored vectors.
+        # Cosine distance to a zero vector is NaN, and Postgres orders NaN above
+        # every real number, so without this they pass the threshold and rank
+        # first. Belt-and-braces: ingest no longer writes them, but any row
+        # written before that fix must not be able to poison a search.
         search_query += """
+        AND NOT ((de.embedding <=> CAST(:vec AS vector))::text = 'NaN')
         AND 1 - (de.embedding <=> CAST(:vec AS vector)) > :threshold
         ORDER BY similarity_score DESC
         LIMIT :limit
@@ -461,6 +639,7 @@ class EmbeddingService:
         FROM kpi_embeddings ke
         JOIN kpis k ON ke.kpi_id = k.id
         WHERE k.organization_id = :org_id
+        AND NOT ((ke.embedding <=> CAST(:vec AS vector))::text = 'NaN')
         AND 1 - (ke.embedding <=> CAST(:vec AS vector)) > :threshold
         ORDER BY similarity_score DESC
         LIMIT :limit
@@ -571,9 +750,10 @@ class EmbeddingService:
             )
             return [data.embedding for data in response.data]
         except Exception as err:
+            # See generate_embedding: zero vectors poison retrieval rather than
+            # degrade it, so a failed batch must abort the ingest.
             logger.error("Error in batch embedding generation: %s", err)
-            # Return zero vectors as fallback
-            return [[0.0] * self.vector_dimension for _ in texts]
+            raise RuntimeError(f"Batch embedding generation failed: {err}") from err
 
     async def get_embedding_statistics(
         self, organization_id: int, db: AsyncSession
@@ -633,7 +813,8 @@ class EmbeddingService:
             1 - (ke.embedding <=> CAST(:vec AS vector)) AS similarity_score
         FROM kpi_embeddings ke
         JOIN kpis k ON ke.kpi_id = k.id
-        WHERE 1 - (ke.embedding <=> CAST(:vec AS vector)) >= :threshold
+        WHERE NOT ((ke.embedding <=> CAST(:vec AS vector))::text = 'NaN')
+        AND 1 - (ke.embedding <=> CAST(:vec AS vector)) >= :threshold
         """
 
         params = {"vec": vec, "threshold": similarity_threshold}
