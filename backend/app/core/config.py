@@ -131,7 +131,7 @@ class Settings(BaseSettings):
     # Off by default: this turns a ~15 second embedding stage into minutes,
     # which should be a deliberate choice per environment rather than a silent
     # regression in upload time.
-    CONTEXTUAL_CHUNKS: bool = False
+    CONTEXTUAL_CHUNKS: bool = True
     # A small instruct model is enough to situate an excerpt and leaves the
     # 7B free. Blank falls back to LLM_MODEL. Note this is the plain instruct
     # build, not the VL (vision) or Coder variant of the same size.
@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     # one chunk each (~500 tokens), not a whole extraction window.
     CONTEXT_CONCURRENCY: int = 2
     CONTEXT_MAX_CHARS: int = 1500   # of the chunk shown to the context model
+    # ...and of the line it generates. This is the reservation the chunker
+    # holds back for that line, so the two must stay equal or the assembled
+    # chunk exceeds the size it was measured against. 240 characters is the
+    # "under 30 words" the prompt already asks for; a longer reply ignored the
+    # instruction, and _accept drops it rather than truncating mid-sentence.
+    CONTEXT_MAX_OUTPUT_CHARS: int = 240
 
     # Vector database settings
     # Must match LLM_EMBEDDING_MODEL and the vector() dimension in init.sql.
@@ -153,9 +159,22 @@ class Settings(BaseSettings):
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
 
-    # AI processing settings
+    # AI processing settings.
+    # CHUNK_SIZE is the fallback only. The real size is measured per document
+    # from the embedding model's loaded context and its own tokenizer (see
+    # windowing.chunk_chars), because a character count says nothing about
+    # whether a chunk fits: financial rows and prose differ by more than 3x in
+    # chars per token inside one filing. This value applies when the model
+    # server does not report a context length.
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
+    # EmbeddingGemma-300M's native window. Used when /api/v0/models does not
+    # report loaded_context_length, so it must be the conservative figure.
+    EMBEDDING_CONTEXT_TOKENS: int = 2048
+    # Chunks are capped well under the window on purpose: a chunk that fills
+    # the context is a chunk whose vector averages several unrelated topics,
+    # which retrieves worse than a smaller one even though it fits.
+    EMBEDDING_CHUNK_TOKENS: int = 512
     MAX_TOKENS: int = 4000
 
     class Config:

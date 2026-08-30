@@ -142,8 +142,11 @@ class FileService:
             await self._set_stage(record, db, "tables_done",
                                   tables_extracted=len(tables))
 
-            # 2. Best-effort KPI extraction from a flattened text view of the tables.
+            # 2. Best-effort KPI extraction from a flattened text view of the
+            # tables. KPIs read only the blocks that are genuinely tabular;
+            # embeddings below index everything.
             text_view = self._tables_to_text(tables)
+            kpi_view = self._tables_to_text(tables, tabular_only=True)
             # Clear any KPIs from a previous run so reprocessing replaces rather
             # than appends (mirrors _extract_and_store_tables).
             previous = await db.execute(
@@ -164,7 +167,7 @@ class FileService:
 
             try:
                 kpis = await self.ai_service.extract_kpis_from_text(
-                    text_view, file_id, db, progress_cb=_kpi_progress
+                    kpi_view, file_id, db, progress_cb=_kpi_progress
                 )
                 for kpi in kpis:
                     db.add(kpi)
@@ -314,13 +317,31 @@ class FileService:
         return export_tables(domain, self.upload_dir)
 
     @staticmethod
-    def _tables_to_text(tables: List[ExtractedTable]) -> str:
-        """Flatten stored tables into text for AI/embeddings."""
+    def _tables_to_text(tables: List[ExtractedTable],
+                        tabular_only: bool = False) -> str:
+        """Flatten stored tables into text for AI/embeddings.
+
+        ``tabular_only`` drops the blocks that are prose. extract_tables()
+        returns whole pages of narrative - risk factors, MD&A, the auditor's
+        opinion - alongside the real statements, and a KPI extractor reading
+        those produces items like "Competition in highly competitive global
+        markets" with no value, or a risk paragraph assigned the number 1.
+        The grounding guard cannot catch them: the figure it checks is real,
+        it is the name attached to it that is invented. Retrieval still
+        indexes everything, because a question about tariffs has to find the
+        tariffs page - it is only extraction that needs the narrower view.
+        """
         chunks: List[str] = []
         for t in tables:
+            rows = t.rows or []
+            body = "\n".join(
+                "\t".join("" if c is None else str(c) for c in row)
+                for row in rows)
+            if tabular_only and not EmbeddingService._is_tabular(  # pylint: disable=protected-access
+                    EmbeddingService.clean_text(body)):
+                continue
             chunks.append(f"[page {t.page} table {t.table_index} via {t.source}]")
-            for row in (t.rows or []):
-                chunks.append("\t".join("" if c is None else str(c) for c in row))
+            chunks.append(body)
         return "\n".join(chunks)
 
     async def _get_file(self, file_id: int, db: AsyncSession) -> UploadedFile:

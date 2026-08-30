@@ -27,6 +27,7 @@ from app.models.user import User
 from app.services.file_service import FileService
 from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
+from app.services.self_query import SelfQuery, apply_metadata_filter
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -278,19 +279,31 @@ def _source_key(chunk: dict) -> tuple:
     return ("region", chunk.get("file_id"), page, table)
 
 
-def _dedupe_by_source(candidates: List[dict]) -> List[dict]:
-    """Keep only the best-ranked chunk from each document region.
+# How many chunks one document region may contribute to a single answer.
+# Collapsing a region to one chunk was correct while a repeated header made
+# neighbours 75% identical; with the header now charged against the chunk
+# budget they overlap by only the configured overlap, and the parts of a long
+# statement are genuinely different content. Apple's cash flow statement is
+# three chunks - operating, investing, financing - so keeping one made the
+# operating figures unreachable whenever another slice outranked them, and the
+# answer correctly reported that it could not see them. The cap still stops a
+# single table from taking every slot.
+MAX_PER_REGION = 3
 
-    Input is already ordered best-first by the hybrid search, so the first
-    chunk seen for a region is the one most similar to the question.
+
+def _dedupe_by_source(candidates: List[dict]) -> List[dict]:
+    """Limit how many chunks each document region contributes.
+
+    Input is already ordered best-first by the hybrid search, so the chunks
+    kept for a region are the ones most similar to the question.
     """
-    seen: set = set()
+    kept: dict = {}
     out: List[dict] = []
     for cand in candidates:
         key = _source_key(cand)
-        if key in seen:
+        if kept.get(key, 0) >= MAX_PER_REGION:
             continue
-        seen.add(key)
+        kept[key] = kept.get(key, 0) + 1
         out.append(cand)
     return out
 
@@ -377,6 +390,97 @@ async def _rerank(question: str, candidates: List[dict], top_k: int) -> List[dic
     return picked[:top_k]
 
 
+async def _retrieve_candidates(body, db: AsyncSession) -> List[dict]:
+    """Everything /ask does before reranking, as one path both routes share.
+
+    /retrieve exists to measure this, so it has to BE this. Kept as one
+    function rather than two similar blocks: the moment they drift, the
+    ranking metrics describe a pipeline that no longer answers anything.
+    """
+    embedding_service = EmbeddingService()
+    # Retrieve wider than we need, then rerank down. Hybrid search is good
+    # at surfacing candidates but poor at ordering them - the chunk that
+    # answers the question is often not the one with the best cosine score.
+    pool = max(body.top_k * 4, 12)
+
+    # Split the question into what to search for and what to filter on.
+    # The catalogue is passed in so the planner picks files by id from
+    # what this organisation actually holds rather than naming one.
+    catalogue = [
+        {"id": row[0], "original_filename": row[1]}
+        for row in (await db.execute(
+            select(UploadedFile.id, UploadedFile.original_filename)
+            .where(UploadedFile.organization_id == body.organization_id)
+        )).all()
+    ]
+    plan = await SelfQuery().plan(body.question, catalogue)
+    # An explicit file_ids on the request is access scoping and wins. The
+    # planner may only narrow inside what the caller already allowed.
+    file_ids = body.file_ids or (plan["file_ids"] or None)
+
+    candidates = await embedding_service.search_documents_hybrid(
+        # Search on the stripped query: "in the 2024 10-K" describes where
+        # to look, and leaving it in the embedded text pulls the match
+        # toward chunks that discuss filings rather than the figure asked
+        # for. Reranking and answering still see the whole question.
+        query=plan["query"],
+        organization_id=body.organization_id,
+        file_ids=file_ids,
+        limit=pool,
+        similarity_threshold=body.similarity_threshold,
+        db=db,
+    )
+    candidates = apply_metadata_filter(
+        candidates, plan["page_min"], plan["page_max"], plan["section"])
+    # Cap how much of one table can fill the answer, so the judge chooses
+    # between distinct regions rather than near-copies of one passage.
+    return _dedupe_by_source(candidates)
+
+
+def _slim(chunk: dict) -> dict:
+    """The ranking-relevant fields of a chunk, without its text."""
+    meta = chunk.get("chunk_metadata") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = {}
+    return {
+        "file_id": chunk.get("file_id"),
+        "page_number": meta.get("page_number"),
+        "section": meta.get("section"),
+        "chunk_index": chunk.get("chunk_index"),
+        "similarity_score": chunk.get("similarity_score"),
+        "rrf_score": chunk.get("rrf_score"),
+        "matched_by": chunk.get("matched_by"),
+    }
+
+
+@router.post("/retrieve")
+async def retrieve_ranked(
+    body: AskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the ranked chunks before and after reranking, with no answer.
+
+    For evaluation. /ask returns only the chunks that survived reranking, so
+    the ordering the reranker was given cannot be recovered from it, and the
+    question "did reranking help" has no observable answer. Exposing both
+    orderings makes MRR before and after computable in one request.
+    """
+    try:
+        candidates = await _retrieve_candidates(body, db)
+        reranked = await _rerank(body.question, candidates, body.top_k)
+    except Exception as err:
+        raise HTTPException(status_code=500,
+                            detail=f"Retrieval failed: {err}") from err
+    return {
+        "before_rerank": [_slim(c) for c in candidates],
+        "after_rerank": [_slim(c) for c in reranked],
+    }
+
+
 @router.post("/ask", response_model=AskResponse)
 async def ask_documents(
     body: AskRequest,
@@ -389,24 +493,8 @@ async def ask_documents(
     answer using only that context. Returns the answer plus its sources so the
     caller can see exactly what the answer was grounded in.
     """
-    embedding_service = EmbeddingService()
     try:
-        # Retrieve wider than we need, then rerank down. Hybrid search is good
-        # at surfacing candidates but poor at ordering them - the chunk that
-        # answers the question is often not the one with the best cosine score.
-        pool = max(body.top_k * 4, 12)
-        candidates = await embedding_service.search_documents_hybrid(
-            query=body.question,
-            organization_id=body.organization_id,
-            file_ids=body.file_ids,
-            limit=pool,
-            similarity_threshold=body.similarity_threshold,
-            db=db,
-        )
-        # Collapse overlapping windows of the same table before ranking, so
-        # the judge chooses between distinct regions and the answer is never
-        # grounded in five near-copies of one passage.
-        candidates = _dedupe_by_source(candidates)
+        candidates = await _retrieve_candidates(body, db)
         chunks = await _rerank(body.question, candidates, body.top_k)
     except Exception as err:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {err}") from err

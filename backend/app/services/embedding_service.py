@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.file import DocumentEmbedding, UploadedFile
-from app.services import bm25
+from app.services import bm25, windowing
 from app.services.context_service import ContextService, content_hash
 from app.models.kpi import KPIEmbedding, KPI
 
@@ -71,6 +71,38 @@ class EmbeddingService:
     # apart. These decide the question on numeric well-formedness instead.
     _NUMBER_PAIR = re.compile(r"(\d[\d,]*)(\t+)(\d[\d,]*)")
     _GROUPED_NUMBER = re.compile(r"^\d{1,3}(,\d{3})*$")
+    _SPLIT_GROUP = re.compile(r"(?<![\d,])(\d{1,2})\t+(\d{1,3}(?:,\d{3})+)(?![\d,])")
+
+    @classmethod
+    def _rejoin_split_group(cls, line: str) -> str:
+        """Rejoin a figure whose leading digits fell into their own column.
+
+        Two guards, both needed. Measured over the Apple 10-K the shape alone
+        fires eight times, and three of those are genuine adjacent columns in
+        the marketable-securities tables: joining them produces "9422,910" and
+        "2616,027", which are not numbers, and "281,038", which is - on a row
+        whose other figures are four digits long.
+
+        So the join must produce a properly grouped number, AND one the same
+        length as another figure already on the line. A statement row reports
+        the same quantity across years, so its figures agree in magnitude;
+        pasting two unrelated columns together almost never lands there.
+        """
+        if not cls._SPLIT_GROUP.search(line):
+            return line
+        widths = {len(cell.strip().replace(",", ""))
+                  for cell in line.split("\t")
+                  if cls._GROUPED_NUMBER.match(cell.strip())}
+
+        def merge(match):
+            joined = match.group(1) + match.group(2)
+            if not cls._GROUPED_NUMBER.match(joined):
+                return match.group(0)
+            if len(joined.replace(",", "")) not in widths:
+                return match.group(0)
+            return joined
+
+        return cls._SPLIT_GROUP.sub(merge, line)
     _YEARISH = re.compile(r"^(\d{4})[,.]?$")
 
     @classmethod
@@ -112,6 +144,16 @@ class EmbeddingService:
             if repaired == text:
                 break
             text = repaired
+        # A leading digit group separated from the rest of its own number by a
+        # column break: "118,254" arrives as "1<tab>18,254". _NUMBER_PAIR
+        # cannot reach these - scanning left to right it tests the PRECEDING
+        # figure against the fragment ("111,482" + "1"), rejects that join,
+        # and consumes the fragment with it, so the pairing that would have
+        # worked is never considered. Anchored on a fragment of one or two
+        # digits followed by a properly grouped number, which is not a shape
+        # a real pair of adjacent columns takes in a financial statement.
+        text = "\n".join(cls._rejoin_split_group(line)
+                         for line in text.split("\n"))
         text = cls._TAB_RUN.sub("\t", text)      # keep ONE tab as a column break
         text = cls._SPACE_RUN.sub(" ", text)
         text = cls._BLANK_RUN.sub("\n\n", text)
@@ -126,6 +168,16 @@ class EmbeddingService:
     # as a table. Below it, the block is prose that pdfplumber happened to
     # return from extract_tables().
     MIN_NUMERIC_ROWS = 3
+
+    # ...and those rows must be this share of every multi-cell row in the
+    # block. The absolute floor alone is not enough: pdfplumber returns whole
+    # pages of MD&A and risk-factor prose from extract_tables(), and once its
+    # glyph positioning has scattered tabs through a sentence, any three lines
+    # holding a year and a figure satisfy the floor. Measured over the Apple
+    # 10-K, that misclassified 10 of 26 blocks. Numeric rows as a fraction of
+    # multi-cell rows separates them cleanly: the prose blocks run 0.11-0.23
+    # and the real statements 0.29-0.82.
+    MIN_NUMERIC_ROW_RATIO = 0.25
 
     _CID_ARTEFACT = re.compile(r"\(cid:\d+\)")
     # A cell holding only a number, allowing the accounting decorations that
@@ -153,26 +205,88 @@ class EmbeddingService:
         A digit ratio is not enough: financial tables are routinely introduced
         by a sentence or two, which dilutes it below any workable threshold.
         Counting rows that hold two or more purely numeric cells tests the
-        structure instead, which is what actually distinguishes the two.
+        structure instead, which is what actually distinguishes the two, and
+        requiring them to be a minimum share of the block's multi-cell rows
+        keeps tab-mangled prose from clearing the bar on three stray lines.
         """
         rows = 0
+        multi_cell = 0
         for line in body.split("\n"):
             cells = [c.strip() for c in line.split("\t") if c.strip()]
             if len(cells) < 2:
                 continue
+            multi_cell += 1
             if sum(1 for c in cells if cls._NUMERIC_CELL.match(c)) >= 2:
                 rows += 1
-                if rows >= cls.MIN_NUMERIC_ROWS:
-                    return True
-        return False
+        if rows < cls.MIN_NUMERIC_ROWS or not multi_cell:
+            return False
+        return rows / multi_cell >= cls.MIN_NUMERIC_ROW_RATIO
 
-    @staticmethod
-    def _window(body: str, header: str, chunk_size: int,
-                overlap: int) -> List[str]:
-        """Slide a fixed character window over body, repeating header on each."""
+    # The repeated header may take at most this share of a chunk. Past it,
+    # the chunk is mostly a copy of its neighbours and the unique text it was
+    # cut to carry is the minority of what gets embedded.
+    HEADER_BUDGET = 0.33
+
+    # However the fixed costs fall, at least this share of a chunk must be
+    # the body text it was cut to carry. Header and prefix are both bounded,
+    # but a small chunk plus a long prefix can still leave a body budget of a
+    # few dozen characters, and a window that advances a few dozen characters
+    # at a time turns one page into thousands of near-identical chunks.
+    BODY_FLOOR = 0.5
+
+    @classmethod
+    def _trim_header(cls, header: str, cap: int) -> str:
+        """Cut the repeated header down to ``cap`` characters.
+
+        Truncation is on a line boundary: a header is a title, a units note
+        and column labels, and half a column label repeated on every chunk is
+        worse than none.
+        """
+        if cap <= 0:
+            return ""
+        if len(header) <= cap:
+            return header
+        kept: List[str] = []
+        used = 0
+        for line in header.split("\n"):
+            if used + len(line) + 1 > cap:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        return "\n".join(kept)
+
+    @classmethod
+    def _window(cls, body: str, header: str, chunk_size: int,
+                overlap: int, reserve: int = 0) -> List[str]:
+        """Slide a window over body, repeating header on each piece.
+
+        ``chunk_size`` is a hard ceiling on the returned text, and ``reserve``
+        holds back room for a prefix the caller adds afterwards. The header is
+        charged against the budget rather than added on top of it: the earlier
+        version floored the budget at half the chunk and then prepended the
+        header whole, so a long header produced chunks twice the configured
+        size of which three quarters was text duplicated from its neighbours.
+        """
         if not body.strip():
             return []
-        budget = max(chunk_size - len(header) - 1, chunk_size // 2)
+        floor = max(int(chunk_size * cls.BODY_FLOOR), 1)
+        available = chunk_size - reserve
+        header = cls._trim_header(
+            header, min(int(chunk_size * cls.HEADER_BUDGET),
+                        available - floor))
+        budget = available - (len(header) + 1 if header else 0)
+        if budget < floor:
+            # The prefix alone has eaten the chunk. Keeping the body text is
+            # the point of the exercise, so the header goes first.
+            header, budget = "", available
+        if budget <= 0:
+            logger.warning(
+                "Chunk prefix (%d chars) does not fit a %d-char chunk; "
+                "body text will be minimal", reserve, chunk_size)
+            budget = max(chunk_size // 4, 1)
+        # Cap the overlap at half the body: clamping it to budget - 1 keeps
+        # the loop finite but advances the window one character at a time.
+        overlap = min(overlap, budget // 2)
         pieces: List[str] = []
         start = 0
         while start < len(body):
@@ -199,6 +313,69 @@ class EmbeddingService:
             "table_index": int(m.group("table")),
             "parser": (m.group("source") or "").strip() or None,
         }
+
+    # Canonical statement titles, matched against the block's text. The
+    # heading field cannot serve this: _heading_of returns the first
+    # substantial line, which on a statement page is the units note
+    # ("(In millions, except number of shares...)") or a stray sentence.
+    # Measured over the Apple 10-K, "income statement", "balance sheet" and
+    # "cash flow" each matched 0 of 427 headings while the real titles sit in
+    # the text of the block, so a section filter has to read the text.
+    _SECTIONS = (
+        ("income statement", r"consolidated statements? of operations"),
+        ("comprehensive income",
+         r"consolidated statements? of comprehensive income"),
+        ("balance sheet", r"consolidated balance sheets?"),
+        ("equity", r"consolidated statements? of shareholders.{0,3} equity"),
+        ("cash flow", r"consolidated statements? of cash flows?"),
+    )
+    # Anchored to a whole line. Searching the block's text as one string also
+    # matched every prose mention of a statement - "at their gross fair values
+    # in the Consolidated Balance Sheets" in a revenue note, the index entry,
+    # the auditor's opinion - which put the section label on five pages that
+    # are not the statement.
+    _SECTION_RX = tuple(
+        (name, re.compile(rf"^\W*{pattern}\W*$", re.I | re.M))
+        for name, pattern in _SECTIONS
+    )
+
+    # Not every statement page carries its title into the extracted table:
+    # pdfplumber's region for Apple's balance sheet begins at the units note,
+    # so the page holding "Total assets" has no title to match. These are the
+    # line items that identify a statement by what it reports. Both must be
+    # present, because either alone appears in the discussion of it too.
+    # Matched as patterns, not substrings: clean_text rejoins words that
+    # pdfplumber split across a tab, and it closes the gap without a space,
+    # so the balance sheet's own total reads "Totalassets".
+    _SECTION_SIGNATURES = tuple(
+        (name, tuple(re.compile(term, re.I) for term in terms))
+        for name, terms in (
+            ("balance sheet", (r"total\s*assets", r"total\s*liabilities")),
+            ("income statement",
+             (r"total\s*net\s*sales", r"total\s*cost\s*of\s*sales")),
+            ("cash flow",
+             (r"operating\s*activities", r"investing\s*activities")),
+        )
+    )
+
+    @classmethod
+    def _section_of(cls, block: str) -> Optional[str]:
+        """Name the financial statement a block belongs to, if it is one.
+
+        Returns a stable slug ("balance sheet") rather than the title as
+        printed, so a question can be matched against it without the caller
+        having to reproduce the filing's exact capitalisation and wording.
+        """
+        lines = [re.sub(r"[\t ]+", " ", line).strip()
+                 for line in block.split("\n")]
+        flat = "\n".join(lines)
+        for name, rx in cls._SECTION_RX:
+            if rx.search(flat):
+                return name
+        for name, signature in cls._SECTION_SIGNATURES:
+            if all(term.search(flat) for term in signature):
+                return name
+        return None
 
     @staticmethod
     def _heading_of(block: str) -> Optional[str]:
@@ -227,6 +404,7 @@ class EmbeddingService:
     async def chunk_document(
         self, text: str, chunk_size: Optional[int] = None,
         overlap: Optional[int] = None, source_file: Optional[str] = None,
+        table_chunk_size: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Chunk the document and carry per-chunk provenance alongside the text.
 
@@ -236,8 +414,31 @@ class EmbeddingService:
         """
         if chunk_size is None:
             chunk_size = settings.CHUNK_SIZE
+        # Tables are measured separately: the same 512 tokens is about 2,900
+        # characters of prose and about 700 of financial rows, so one size
+        # either overflows the tables or starves the prose.
+        if table_chunk_size is None:
+            table_chunk_size = chunk_size
         if overlap is None:
-            overlap = settings.CHUNK_OVERLAP
+            # Hold the configured overlap ratio rather than the raw character
+            # count: the chunk size is now measured per document, and 200
+            # characters is a fifth of a table chunk but a twelfth of a prose
+            # one, which is not the same amount of continuity.
+            overlap = round(chunk_size * settings.CHUNK_OVERLAP
+                            / max(settings.CHUNK_SIZE, 1))
+        # compose_chunk() prepends provenance after the text is cut, so the
+        # room it takes has to come out of the budget here or the finished
+        # chunk is over the size it was sized against.
+        #
+        # The generated context line has to be reserved on the tabular shape,
+        # which is the expensive one: there the line is appended alongside the
+        # "Section:" label rather than replacing it, so both are present at
+        # once. Reserving the worst case costs prose chunks a little body text
+        # and keeps one number describing every chunk.
+        probe = {"page_number": 9999, "heading": "x" * 120, "tabular": True}
+        context = ("x" * settings.CONTEXT_MAX_OUTPUT_CHARS
+                   if settings.CONTEXTUAL_CHUNKS else None)
+        reserve = len(self.compose_chunk("", source_file, probe, context))
 
         out: List[Dict[str, Any]] = []
         for block in self._split_blocks(self.clean_text(text)):
@@ -249,6 +450,7 @@ class EmbeddingService:
 
             meta = self._block_meta(block)
             meta["heading"] = self._heading_of(block)
+            meta["section"] = self._section_of(block)
 
             # Repeating the leading lines on every chunk is what keeps a
             # table's title, units and column headers attached to its numeric
@@ -264,7 +466,11 @@ class EmbeddingService:
                 if not body.strip():   # table shorter than the header window
                     header, body = "", rest
 
-            pieces = self._window(body, header, chunk_size, overlap)
+            size = table_chunk_size if meta["tabular"] else chunk_size
+            pieces = self._window(body, header, size,
+                                  round(size * settings.CHUNK_OVERLAP
+                                        / max(settings.CHUNK_SIZE, 1)),
+                                  reserve=reserve)
             if not pieces:
                 continue
 
@@ -306,6 +512,25 @@ class EmbeddingService:
         prefix = f"[{' | '.join(bits)}]\n" if bits else ""
         return prefix + piece
 
+    @classmethod
+    def _density_samples(cls, text: str) -> tuple:
+        """Prose and table text from this document, sampled separately.
+
+        One ratio per document is wrong in a filing: measured against
+        EmbeddingGemma, narrative runs 5.77 chars/token and financial rows
+        1.40 - a 4.1x spread INSIDE one 10-K. Sizing everything from the
+        blended figure cuts prose chunks to a third of what they could safely
+        hold, and it is the prose that most needs the room.
+        """
+        prose, tables = [], []
+        for block in cls._split_blocks(cls.clean_text(text)):
+            body = "\n".join(block.split("\n")[1:])
+            if not body.strip() or cls._is_garbage(body):
+                continue
+            (tables if cls._is_tabular(body) else prose).append(body)
+        cap = 6000
+        return ("\n".join(prose)[:cap], "\n".join(tables)[:cap])
+
     async def create_document_embeddings(
         self, file_id: int, text: str, db: AsyncSession,
         progress_cb=None,
@@ -321,8 +546,34 @@ class EmbeddingService:
             except Exception:  # provenance is nice-to-have, never fatal
                 source_file = None
 
+        # Size the chunk in tokens against the embedding model's own
+        # tokenizer, then convert to characters for the windowing. A fixed
+        # character size means something different for a table than for a
+        # paragraph, and only one of the two can be right.
+        prose_sample, table_sample = self._density_samples(text)
+        sizing = await asyncio.to_thread(
+            windowing.chunk_chars, settings.LLM_BASE_URL,
+            self.embedding_model, prose_sample or text,
+            settings.EMBEDDING_CHUNK_TOKENS,
+        )
+        table_sizing = sizing
+        if table_sample:
+            table_sizing = await asyncio.to_thread(
+                windowing.chunk_chars, settings.LLM_BASE_URL,
+                self.embedding_model, table_sample,
+                settings.EMBEDDING_CHUNK_TOKENS,
+            )
+        logger.info(
+            "Chunking prose at %d chars (%.2f chars/token) and tables at "
+            "%d chars (%.2f chars/token), %d tokens of a %d-token window",
+            sizing.chars, sizing.ratio, table_sizing.chars,
+            table_sizing.ratio, sizing.tokens, sizing.context_tokens,
+        )
+
         # Chunk with provenance so each row records its page / table / heading.
-        pieces = await self.chunk_document(text, source_file=source_file)
+        pieces = await self.chunk_document(
+            text, chunk_size=sizing.chars, source_file=source_file,
+            table_chunk_size=table_sizing.chars)
 
         # Optional contextual retrieval pass. Generation is minutes of local
         # inference, so it runs only when explicitly enabled, and a failure
@@ -346,6 +597,25 @@ class EmbeddingService:
                                contexts.get(content_hash(p["text"])))
             for p in pieces
         ]
+        # A single ratio per document, applied to a document whose own
+        # density spans 3.2x, is the one way the sizing above can be wrong in
+        # the unsafe direction: calibrate on prose at 4.9 chars/token and a
+        # dense table chunk of the same character length is three times the
+        # tokens. Reading the longest chunk at the pessimistic ratio says
+        # whether even that case still fits, at no cost. Warn rather than
+        # truncate - a silently shortened chunk is a vector that misrepresents
+        # its own text, which is worse than an oversized one the log names.
+        if chunks:
+            widest = max(len(c) for c in chunks)
+            ceiling = sizing.context_tokens * windowing.FALLBACK_CHARS_PER_TOKEN
+            if widest > ceiling:
+                logger.warning(
+                    "Longest chunk is %d chars; read at the pessimistic %.1f "
+                    "chars/token that exceeds the %d-token window. Lower "
+                    "EMBEDDING_CHUNK_TOKENS.",
+                    widest, windowing.FALLBACK_CHARS_PER_TOKEN,
+                    sizing.context_tokens)
+
         embeddings = []
 
         # Embed in batches rather than one HTTP round-trip per chunk. A large
@@ -380,6 +650,7 @@ class EmbeddingService:
                     "table_index": pieces[i].get("table_index"),
                     "parser": pieces[i].get("parser"),
                     "heading": pieces[i].get("heading"),
+                    "section": pieces[i].get("section"),
                     "tabular": pieces[i].get("tabular"),
                     "context": contexts.get(content_hash(pieces[i]["text"])),
                 }

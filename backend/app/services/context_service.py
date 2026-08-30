@@ -62,7 +62,7 @@ def _accept(generated: str, chunk: str) -> Optional[str]:
     year in the indexed text is worse than no context at all.
     """
     line = " ".join(generated.split()).strip().strip('"')
-    if not line or len(line) > 400:
+    if not line or len(line) > settings.CONTEXT_MAX_OUTPUT_CHARS:
         return None
     invented = {m.group(0) for m in _YEAR.finditer(line)} - {
         m.group(0) for m in _YEAR.finditer(chunk)
