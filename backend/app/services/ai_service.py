@@ -339,6 +339,15 @@ class AIService:
             value = _coerce_number(kpi_data.get("kpi_value"))
             unit = (str(kpi_data.get("kpi_unit"))[:50]
                     if kpi_data.get("kpi_unit") else None)
+            # A zero with no unit is how the model reports something it could
+            # not quantify - it returns risk factors and narrative statements
+            # this way. They pass grounding trivially, because a bare "0"
+            # appears somewhere in almost any page, so the guard cannot catch
+            # them and they have to be excluded by shape instead.
+            if value == 0 and not unit:
+                logger.debug("Dropping non-numeric item %r", name)
+                dropped += 1
+                continue
             grounded = _ground_value(value, window, unit)
             if grounded is None:
                 logger.warning(
