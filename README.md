@@ -15,8 +15,8 @@ came from where.
 
 ## What it does
 
-Upload a document → the **unified extraction engine** detects and extracts every table,
-preserving real rows and columns → tables are stored, previewed in the UI, and exportable
+Upload a document -> the **unified extraction engine** detects and extracts every table,
+preserving real rows and columns -> tables are stored, previewed in the UI, and exportable
 to a multi-sheet XLSX / per-table CSV. Best-effort KPI extraction and semantic search run
 on top when an OpenAI key is configured.
 
@@ -40,40 +40,63 @@ format-agnostic.
 
 ```
 KPI EXTRACTION/
-├── backend/                       # FastAPI + SQLAlchemy (async) + Postgres/pgvector
-│   ├── app/
-│   │   ├── services/
-│   │   │   ├── table_extraction/   # ⭐ the unified engine
-│   │   │   │   ├── engine.py        #   format router + OCR fallback + XLSX/CSV export
-│   │   │   │   ├── pdf_tables.py    #   pdfplumber (born-digital PDFs)
-│   │   │   │   ├── ocr_tables.py    #   PyMuPDF + Tesseract (scanned PDFs/images)
-│   │   │   │   ├── office_tables.py #   Excel / CSV / DOCX
-│   │   │   │   └── models.py        #   common ExtractedTable dataclass
-│   │   │   ├── file_service.py      # ingestion pipeline (ORM-only, no SQL injection)
-│   │   │   ├── ai_service.py        # best-effort KPI extraction (OpenAI)
-│   │   │   └── embedding_service.py # best-effort embeddings (pgvector)
-│   │   ├── api/v1/endpoints/files.py# upload + /tables, /tables/preview, /tables/export
-│   │   ├── models/file.py           # UploadedFile, ExtractedKPI, ExtractedTable
-│   │   └── core/config.py           # OCR + file-type settings
-│   ├── scripts/extract_tables_cli.py# ⭐ standalone CLI — extract without DB/server
-│   └── init.sql                     # schema incl. extracted_tables
-├── frontend/                        # Next.js 14 + Tailwind
-│   └── src/components/dashboard/TableViewer.tsx  # ⭐ renders + exports extracted tables
-└── docker-compose.yml
++-- backend/                       # FastAPI + SQLAlchemy (async) + Postgres/pgvector
+|   +-- app/
+|   |   +-- services/
+|   |   |   +-- table_extraction/   #  the unified engine
+|   |   |   |   +-- engine.py        #   format router + OCR fallback + XLSX/CSV export
+|   |   |   |   +-- pdf_tables.py    #   pdfplumber (born-digital PDFs)
+|   |   |   |   +-- ocr_tables.py    #   PyMuPDF + Tesseract (scanned PDFs/images)
+|   |   |   |   +-- office_tables.py #   Excel / CSV / DOCX
+|   |   |   |   +-- models.py        #   common ExtractedTable dataclass
+|   |   |   +-- file_service.py      # ingestion pipeline (ORM-only, no SQL injection)
+|   |   |   +-- ai_service.py        # best-effort KPI extraction (OpenAI)
+|   |   |   +-- embedding_service.py # best-effort embeddings (pgvector)
+|   |   +-- api/v1/endpoints/files.py# upload + /tables, /tables/preview, /tables/export
+|   |   +-- models/file.py           # UploadedFile, ExtractedKPI, ExtractedTable
+|   |   +-- core/config.py           # OCR + file-type settings
+|   +-- scripts/extract_tables_cli.py#  standalone CLI - extract without DB/server
+|   +-- init.sql                     # schema incl. extracted_tables
++-- frontend/                        # Next.js 14 + Tailwind
+|   +-- src/components/dashboard/TableViewer.tsx  #  renders + exports extracted tables
++-- docker-compose.yml
 ```
 
 ---
 
 ## Quick start
 
-### Option A — standalone CLI (fastest; no DB, no server)
+### Option A - admin console (recommended)
+
+A single-page admin UI is served by the backend itself at **`/admin/`** - same origin,
+so there is no CORS setup and no separate frontend build.
+
+```bash
+conda activate KPI_Extraction          # or your venv
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8001
+```
+
+Then open **http://127.0.0.1:8001/admin/** and sign in. The console covers upload
+(drag & drop), live pipeline progress, extracted tables, KPIs, RAG Q&A, users and
+organizations.
+
+Requires a running Postgres with pgvector, Redis, and an OpenAI-compatible LLM server
+(see [Local LLM](#local-llm-no-api-keys)). One-time database setup:
+
+```sql
+CREATE ROLE kpi_user LOGIN PASSWORD 'kpi_password';
+CREATE DATABASE kpi_platform OWNER kpi_user;
+\c kpi_platform
+CREATE EXTENSION IF NOT EXISTS vector;
+\i backend/init.sql
+```
+
+### Option B - standalone CLI (no DB, no server)
 
 ```bash
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install pdfplumber pandas openpyxl python-docx        # core
-pip install PyMuPDF pytesseract                            # + OCR (needs `tesseract` binary)
-
 python scripts/extract_tables_cli.py path/to/report.pdf
 python scripts/extract_tables_cli.py data.xlsx --json
 python scripts/extract_tables_cli.py scanned.pdf --export ./out   # writes XLSX + CSVs
@@ -82,24 +105,47 @@ python scripts/extract_tables_cli.py scanned.pdf --export ./out   # writes XLSX 
 OCR also needs the system Tesseract binary:
 `brew install tesseract` (macOS) / `apt-get install tesseract-ocr` (Debian/Ubuntu).
 
-### Option B — full platform (Docker)
+### Option C - full platform (Docker)
 
 ```bash
 docker-compose up -d            # Postgres (+pgvector), Redis, backend, frontend
-# backend  → http://localhost:8000  (Swagger at /docs)
-# frontend → http://localhost:3000
 ```
 
-### Option C — backend only
-
-```bash
-cd backend
-pip install -r requirements.txt
-export DATABASE_URL=postgresql+asyncpg://kpi_user:kpi_password@localhost:5432/kpi_platform
-uvicorn main:app --reload
-```
+> **Note:** the Next.js frontend in `frontend/` is **not currently buildable** - it imports
+> `@/lib/api`, which has never been committed to this repository. Use the `/admin/`
+> console instead.
 
 ---
+
+## Retrieval pipeline (RAG)
+
+```
+PDF --> pdfplumber / OCR --> ExtractedTable rows (jsonb)
+                                    |
+                          _tables_to_text()
+                                    |
+              +---------------------+---------------------+
+              v                                           v
+   LLM windows (24k chars)                    chunks (1k chars, 200 overlap)
+   -> KPI extraction                           -> embeddings -> pgvector
+```
+
+**Chunking.** Text is split on table boundaries, and each table's header block
+(title, `(In millions)`, the year columns) is **repeated into every chunk of that
+table**. Without this, a retrieved chunk arrives as unlabelled columns and the model
+invents the period and units. Chunks are cleaned first - pdfplumber splits words
+across tabs (`Total ne\tt sales`), which is repaired while column breaks are preserved.
+
+**Metadata.** Every chunk stores `source_file`, `page_number`, `table_index`, `parser`
+and the nearest `heading`, so answers can be traced back to a page of the PDF.
+
+**Hybrid retrieval.** Queries run against **both** pgvector cosine similarity **and**
+Postgres full-text search (`websearch_to_tsquery`, GIN-indexed), fused with Reciprocal
+Rank Fusion. Vector search alone misses exact tokens (identifiers, statement line
+names); keyword search alone misses paraphrase.
+
+**Grounding.** The answer prompt forbids supplying any period, currency, scale or unit
+not present in the retrieved context, and requires figures to be quoted verbatim.
 
 ## Key API endpoints
 
@@ -115,19 +161,45 @@ uvicorn main:app --reload
 
 ## Local LLM (no API keys)
 
-The LLM steps default to a **local OpenAI-compatible server** (Ollama), so no API key is
-needed. Configure via `LLM_BASE_URL` / `LLM_MODEL` / `LLM_VISION_MODEL` / `LLM_EMBEDDING_MODEL`.
+Everything runs against a **local OpenAI-compatible server** - no data leaves the machine
+and no API key is needed. Defaults target **LM Studio** on port 1234:
 
-```bash
-ollama serve
-ollama pull qwen2.5:7b-instruct     # KPI structuring (text)
-ollama pull qwen2.5vl:7b            # scanned-page tables (vision) — needs ENABLE_VLM=true
-ollama pull nomic-embed-text        # embeddings (768-dim; matches init.sql)
+| Setting | Default | Notes |
+|---|---|---|
+| `LLM_BASE_URL` | `http://localhost:1234/v1` | LM Studio; use `:11434/v1` for Ollama |
+| `LLM_MODEL` | `qwen2.5-7b-instruct-1m` | ~5s per call, non-reasoning |
+| `LLM_EMBEDDING_MODEL` | `text-embedding-embeddinggemma-300m-qat` | **768-dim** |
+| `VECTOR_DIMENSION` | `768` | must match the model *and* `vector(768)` in `init.sql` |
+| `LLM_THINK_PREFILL` | `""` | see below |
+
+Load both models in LM Studio and start its server. Give the chat model a **32k context**
+- extraction sends 24k-char windows, and the default 8k will reject them.
+
+### Reasoning models
+
+Reasoning models (Qwen3, Gemma-4) can spend their entire token budget "thinking" and
+return an empty message. Neither `chat_template_kwargs {"enable_thinking": false}` nor a
+`/no_think` suffix reliably prevents this through LM Studio. What does work is seeding the
+assistant turn with an already-closed think block:
+
+```python
+LLM_THINK_PREFILL = "<think>\n\n</think>\n\n"    # 59s/empty -> 7s/correct JSON
 ```
 
-Set `ENABLE_VLM=true` to send scanned pages to the vision model before OCR. Leaving it off
-keeps scanned-doc extraction fully deterministic/offline (Tesseract only). Try the vision
-path from the CLI: `python scripts/extract_tables_cli.py scanned.pdf --vlm`.
+Leave it as `""` for a plain instruct model such as `qwen2.5-7b-instruct`.
+
+### Changing the embedding model
+
+`VECTOR_DIMENSION`, the model's output size, and `vector(N)` in `backend/init.sql` must
+all agree. Switching to a 1024- or 4096-dim embedder means altering both embedding tables,
+rebuilding the ivfflat indexes, and re-embedding every document.
+
+### KPI extraction cost
+
+Extraction scans the **whole** document in windows (`KPI_WINDOW_CHARS`,
+`KPI_MAX_WINDOWS`), sized automatically from the model's live context. A ~300k-char 10-K
+is ~15 windows ~ 6 minutes on a local 7B. Lower `KPI_MAX_WINDOWS` to trade coverage for
+speed - skipped windows are logged, never silent.
 
 ## Notes & limitations
 
@@ -141,5 +213,16 @@ path from the CLI: `python scripts/extract_tables_cli.py scanned.pdf --vlm`.
   marked with lower `confidence`; verify low-confidence tables before relying on them.
 - The whitespace (`text`) pdfplumber strategy can over-split cells on complex layouts; ruled
   tables (`lines`) are preferred automatically when available.
+- **Extracted vs curated KPIs are different tables.** Extraction writes to
+  `extracted_kpis` (per-file staging). Nothing lands in `kpis` until you promote it -
+  `POST /api/v1/files/{id}/promote-kpis`, or **-> Curated** in the admin console.
+  Promotion is idempotent and skips duplicates by name within an organization.
+- **Re-extraction replaces, it does not append.** Tables, KPIs and embeddings for a file
+  are cleared before a re-run, so a run where the model returns nothing will leave you
+  with nothing. Check the log before re-extracting good data.
+- **The `frontend/` Next.js app does not build** - `@/lib/api` was never committed. The
+  `/admin/` console is the working UI.
+- Defaults in `app/core/config.py` (`SECRET_KEY`, `kpi_password`) are development
+  placeholders and must be changed before any non-local deployment.
 
 See [`docs/CONSOLIDATION.md`](docs/CONSOLIDATION.md) for migration history and what was archived.

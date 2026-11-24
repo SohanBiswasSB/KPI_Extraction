@@ -12,6 +12,7 @@ Rewritten for the consolidated platform:
 from __future__ import annotations
 
 import os
+import time
 import uuid
 import logging
 from typing import Any, Dict, List, Optional
@@ -19,18 +20,26 @@ from typing import Any, Dict, List, Optional
 import aiofiles
 from fastapi import UploadFile, HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.file import UploadedFile, FileStatus, ExtractedKPI, ExtractedTable
+from app.models.file import (
+    UploadedFile, FileStatus, ExtractedTable, ExtractedKPI, DocumentEmbedding,
+)
 from app.services.ai_service import AIService
 from app.services.embedding_service import EmbeddingService
-from app.services.table_extraction import extract_tables, export_tables, SUPPORTED_EXTENSIONS
+from app.services.table_extraction import (
+    extract_tables, export_tables, SUPPORTED_EXTENSIONS,
+)
+from app.services.table_extraction.models import ExtractedTable as DomainTable
 
 logger = logging.getLogger(__name__)
 
 
 class FileService:
+    """Saves uploads, runs the table-extraction pipeline, and serves results."""
+
     def __init__(self):
         self.ai_service = AIService()
         self.embedding_service = EmbeddingService()
@@ -64,7 +73,7 @@ class FileService:
                 content = await file.read()
                 await f.write(content)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}")
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}") from exc
 
         record = UploadedFile(
             filename=unique_filename,
@@ -86,6 +95,39 @@ class FileService:
     # ------------------------------------------------------------------ #
     # Processing pipeline
     # ------------------------------------------------------------------ #
+    @staticmethod
+    async def _set_stage(record, db: AsyncSession, stage: str, **extra) -> None:
+        """Publish the current pipeline stage so clients can poll real progress.
+
+        Committed immediately: the upload request is still in flight, so this is
+        the only way a polling UI can see which step is running.
+
+        Each stage transition closes out the previous stage's wall clock into
+        ``timings``, so the UI can show where the time actually went rather
+        than only what is running now. ``stage_started_at`` plus the generic
+        ``items_done`` / ``items_total`` counters are what an ETA is computed
+        from, and they reset on every transition so a new stage never inherits
+        the previous one's totals.
+        """
+        meta = dict(record.processing_metadata or {})
+        now = time.time()
+        if meta.get("stage") != stage:
+            previous, started = meta.get("stage"), meta.get("stage_started_at")
+            if previous and started:
+                timings = dict(meta.get("timings") or {})
+                timings[previous] = round(
+                    timings.get(previous, 0.0) + now - started, 1)
+                meta["timings"] = timings
+            meta["stage_started_at"] = now
+            for key in ("items_done", "items_total", "items_label"):
+                meta.pop(key, None)
+        meta["stage"] = stage
+        meta["updated_at"] = now
+        meta.update(extra)
+        record.processing_metadata = meta
+        flag_modified(record, "processing_metadata")
+        await db.commit()
+
     async def process_file_async(self, file_id: int, db: AsyncSession) -> Dict[str, Any]:
         """Extract tables (+ best-effort KPIs/embeddings) for a stored file."""
         record = await self._get_file(file_id, db)
@@ -95,37 +137,100 @@ class FileService:
 
         try:
             # 1. Structured table extraction (the core of the platform).
+            await self._set_stage(record, db, "extracting_tables")
             tables = await self._extract_and_store_tables(record, db)
+            await self._set_stage(record, db, "tables_done",
+                                  tables_extracted=len(tables))
 
-            # 2. Best-effort KPI extraction from a flattened text view of the tables.
+            # 2. Best-effort KPI extraction from a flattened text view of the
+            # tables. KPIs read only the blocks that are genuinely tabular;
+            # embeddings below index everything.
             text_view = self._tables_to_text(tables)
+            kpi_view = self._tables_to_text(tables, tabular_only=True)
+            # Clear any KPIs from a previous run so reprocessing replaces rather
+            # than appends (mirrors _extract_and_store_tables).
+            previous = await db.execute(
+                select(ExtractedKPI).where(ExtractedKPI.file_id == file_id)
+            )
+            for stale in previous.scalars().all():
+                await db.delete(stale)
+
             kpi_count = 0
+            await self._set_stage(record, db, "extracting_kpis",
+                                  items_done=0, items_total=None,
+                                  items_label="window")
+
+            async def _kpi_progress(done: int, total: int) -> None:
+                await self._set_stage(record, db, "extracting_kpis",
+                                      items_done=done, items_total=total,
+                                      items_label="window")
+
             try:
-                kpis = await self.ai_service.extract_kpis_from_text(text_view, file_id, db)
+                kpis = await self.ai_service.extract_kpis_from_text(
+                    kpi_view, file_id, db, progress_cb=_kpi_progress
+                )
                 for kpi in kpis:
                     db.add(kpi)
                 kpi_count = len(kpis)
-            except Exception as exc:  # AI is optional — never fail the pipeline on it
+            except Exception as exc:  # AI is optional - never fail the pipeline on it
                 logger.warning("KPI extraction skipped for file %s: %s", file_id, exc)
 
             # 3. Best-effort embeddings for semantic search.
+            # Clear prior embeddings first: without this, every reprocess appends
+            # a fresh copy of every chunk and the same text wins several of the
+            # top-k slots in semantic search.
+            stale_embeddings = await db.execute(
+                select(DocumentEmbedding).where(DocumentEmbedding.file_id == file_id)
+            )
+            for stale in stale_embeddings.scalars().all():
+                await db.delete(stale)
+
+            await self._set_stage(record, db, "embedding",
+                                  kpis_extracted=kpi_count)
+            embedding_count = 0
             try:
+                async def _embed_progress(phase: str, done: int,
+                                          total: int) -> None:
+                    await self._set_stage(record, db, phase,
+                                          items_done=done, items_total=total,
+                                          items_label="chunk")
+
                 embeddings = await self.embedding_service.create_document_embeddings(
-                    file_id, text_view, db
+                    file_id, text_view, db, progress_cb=_embed_progress
                 )
                 for emb in embeddings:
                     db.add(emb)
+                embedding_count = len(embeddings)
             except Exception as exc:
-                logger.warning("Embeddings skipped for file %s: %s", file_id, exc)
+                # Unlike KPI extraction, embeddings are not optional: without
+                # them the document is invisible to search, so reporting
+                # COMPLETED would hide a file that answers nothing.
+                logger.error("Embeddings failed for file %s: %s", file_id, exc)
+                record.status = FileStatus.FAILED
+                record.processing_metadata = {
+                    **(record.processing_metadata or {}),
+                    "stage": "embedding",
+                    "error": f"Embedding generation failed: {exc}",
+                }
+                await db.commit()
+                return
 
+            await self._set_stage(record, db, "done")
             record.status = FileStatus.COMPLETED
             record.processing_metadata = {
                 **(record.processing_metadata or {}),
+                "stage": "done",
                 "tables_extracted": len(tables),
                 "kpis_extracted": kpi_count,
+                "embeddings_created": embedding_count,
             }
             await db.commit()
-            return {"file_id": file_id, "status": "completed", "tables": len(tables), "kpis": kpi_count}
+            return {
+                "file_id": file_id,
+                "status": "completed",
+                "tables": len(tables),
+                "kpis": kpi_count,
+            }
 
         except Exception as exc:
             await db.rollback()
@@ -133,7 +238,7 @@ class FileService:
             record.status = FileStatus.FAILED
             record.processing_metadata = {**(record.processing_metadata or {}), "error": str(exc)}
             await db.commit()
-            raise HTTPException(status_code=500, detail=f"File processing failed: {exc}")
+            raise HTTPException(status_code=500, detail=f"File processing failed: {exc}") from exc
 
     async def _extract_and_store_tables(
         self, record: UploadedFile, db: AsyncSession
@@ -171,6 +276,7 @@ class FileService:
     # Reads / helpers
     # ------------------------------------------------------------------ #
     async def get_tables(self, file_id: int, db: AsyncSession) -> List[ExtractedTable]:
+        """Return a file's stored tables ordered by page then table index."""
         await self._get_file(file_id, db)
         result = await db.execute(
             select(ExtractedTable)
@@ -201,8 +307,6 @@ class FileService:
 
     def export_file_tables(self, tables: List[ExtractedTable]) -> Dict[str, Any]:
         """Write ExtractedTable rows to XLSX + per-table CSV."""
-        from app.services.table_extraction.models import ExtractedTable as DomainTable
-
         domain = [
             DomainTable(
                 page=t.page, index=t.table_index, rows=t.rows, source=t.source or "",
@@ -213,13 +317,31 @@ class FileService:
         return export_tables(domain, self.upload_dir)
 
     @staticmethod
-    def _tables_to_text(tables: List[ExtractedTable]) -> str:
-        """Flatten stored tables into text for AI/embeddings."""
+    def _tables_to_text(tables: List[ExtractedTable],
+                        tabular_only: bool = False) -> str:
+        """Flatten stored tables into text for AI/embeddings.
+
+        ``tabular_only`` drops the blocks that are prose. extract_tables()
+        returns whole pages of narrative - risk factors, MD&A, the auditor's
+        opinion - alongside the real statements, and a KPI extractor reading
+        those produces items like "Competition in highly competitive global
+        markets" with no value, or a risk paragraph assigned the number 1.
+        The grounding guard cannot catch them: the figure it checks is real,
+        it is the name attached to it that is invented. Retrieval still
+        indexes everything, because a question about tariffs has to find the
+        tariffs page - it is only extraction that needs the narrower view.
+        """
         chunks: List[str] = []
         for t in tables:
+            rows = t.rows or []
+            body = "\n".join(
+                "\t".join("" if c is None else str(c) for c in row)
+                for row in rows)
+            if tabular_only and not EmbeddingService._is_tabular(  # pylint: disable=protected-access
+                    EmbeddingService.clean_text(body)):
+                continue
             chunks.append(f"[page {t.page} table {t.table_index} via {t.source}]")
-            for row in (t.rows or []):
-                chunks.append("\t".join("" if c is None else str(c) for c in row))
+            chunks.append(body)
         return "\n".join(chunks)
 
     async def _get_file(self, file_id: int, db: AsyncSession) -> UploadedFile:
@@ -230,6 +352,7 @@ class FileService:
         return record
 
     async def delete_file(self, file_id: int, db: AsyncSession) -> bool:
+        """Delete a file's DB record (cascades to tables/KPIs) and its file on disk."""
         record = await self._get_file(file_id, db)
         if record.file_path and os.path.exists(record.file_path):
             os.remove(record.file_path)

@@ -1,14 +1,22 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, Text, ForeignKey, JSON, Numeric
+"""Database models and Pydantic schemas for uploaded files and their extractions."""
+import enum
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+
+from sqlalchemy import Column, Integer, String, DateTime, Enum, Text, ForeignKey, JSON, Numeric
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
-from app.core.database import Base
-import enum
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+
+from pgvector.sqlalchemy import Vector
+
+from app.core.config import settings
+from app.core.database import Base
 
 
 class FileStatus(str, enum.Enum):
+    """Lifecycle states of an uploaded file."""
+
     UPLOADED = "uploaded"
     PROCESSING = "processing"
     COMPLETED = "completed"
@@ -16,32 +24,46 @@ class FileStatus(str, enum.Enum):
 
 
 class UploadedFile(Base):
+    """A document uploaded for table/KPI extraction."""
+
     __tablename__ = "uploaded_files"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String(255), nullable=False, index=True)
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
     file_size = Column(Integer, nullable=False)
     file_type = Column(String(100), nullable=False)
-    status = Column(Enum(FileStatus), default=FileStatus.UPLOADED)
+    status = Column(
+        Enum(FileStatus, name="file_status",
+             values_callable=lambda e: [m.value for m in e]),
+        default=FileStatus.UPLOADED,
+    )
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     uploaded_by = Column(Integer, ForeignKey("users.id"))
     processing_metadata = Column(JSON)  # Store processing results and metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    
+
     # Relationships
     organization = relationship("Organization", back_populates="uploaded_files")
     uploaded_by_user = relationship("User", back_populates="uploaded_files")
-    extracted_kpis = relationship("ExtractedKPI", back_populates="file", cascade="all, delete-orphan")
-    extracted_tables = relationship("ExtractedTable", back_populates="file", cascade="all, delete-orphan")
-    embeddings = relationship("DocumentEmbedding", back_populates="file", cascade="all, delete-orphan")
+    extracted_kpis = relationship(
+        "ExtractedKPI", back_populates="file", cascade="all, delete-orphan"
+    )
+    extracted_tables = relationship(
+        "ExtractedTable", back_populates="file", cascade="all, delete-orphan"
+    )
+    embeddings = relationship(
+        "DocumentEmbedding", back_populates="file", cascade="all, delete-orphan"
+    )
 
 
 class ExtractedKPI(Base):
+    """A KPI value identified within a document."""
+
     __tablename__ = "extracted_kpis"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("uploaded_files.id"), nullable=False)
     kpi_name = Column(String(255), nullable=False, index=True)
@@ -52,13 +74,14 @@ class ExtractedKPI(Base):
     raw_text = Column(Text)  # Original text where KPI was found
     context = Column(Text)  # Surrounding context
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     file = relationship("UploadedFile", back_populates="extracted_kpis")
 
 
 class ExtractedTable(Base):
     """A structured table extracted from a document (rows/cols preserved)."""
+
     __tablename__ = "extracted_tables"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -79,37 +102,67 @@ class ExtractedTable(Base):
 
 
 class DocumentEmbedding(Base):
+    """A text chunk and its vector embedding for semantic search."""
+
     __tablename__ = "document_embeddings"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     file_id = Column(Integer, ForeignKey("uploaded_files.id"), nullable=False)
     content_chunk = Column(Text, nullable=False)
-    embedding = Column("embedding", type_=None)  # Will be handled by pgvector
+    embedding = Column(Vector(settings.VECTOR_DIMENSION))
     chunk_index = Column(Integer)
     chunk_metadata = Column(JSON)  # Store additional metadata about the chunk
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
     # Relationships
     file = relationship("UploadedFile", back_populates="embeddings")
 
 
+class ChunkContext(Base):
+    """Generated one-line context for a chunk, keyed by the chunk's content.
+
+    Contextualising a corpus costs minutes of local inference, and re-chunking
+    rewrites every row of document_embeddings. Keying the cache on a hash of
+    the chunk text rather than on a chunk id means a change to chunking only
+    pays for the chunks whose text actually changed.
+    """
+
+    __tablename__ = "chunk_contexts"
+
+    content_hash = Column(String(64), primary_key=True)
+    # Part of the key, not just a record of it: a different model produces
+    # different context, so switching models has to regenerate rather than
+    # silently serve what the previous one wrote.
+    model = Column(String(128), primary_key=True)
+    context = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 # Pydantic models for API
 class FileBase(BaseModel):
+    """Shared file fields."""
+
     original_filename: str
     file_type: str
     file_size: int
 
 
 class FileCreate(FileBase):
+    """Payload for registering a file."""
+
     organization_id: int
 
 
 class FileUpdate(BaseModel):
+    """Mutable file fields."""
+
     status: Optional[FileStatus] = None
     processing_metadata: Optional[Dict[str, Any]] = None
 
 
 class FileResponse(FileBase):
+    """File record returned by the API."""
+
     id: int
     filename: str
     file_path: str
@@ -119,12 +172,16 @@ class FileResponse(FileBase):
     processing_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class ExtractedKPIBase(BaseModel):
+    """Shared KPI fields."""
+
     kpi_name: str
     kpi_value: Optional[float] = None
     kpi_unit: Optional[str] = None
@@ -135,19 +192,27 @@ class ExtractedKPIBase(BaseModel):
 
 
 class ExtractedKPICreate(ExtractedKPIBase):
+    """Payload for creating a KPI."""
+
     file_id: int
 
 
 class ExtractedKPIResponse(ExtractedKPIBase):
+    """KPI record returned by the API."""
+
     id: int
     file_id: int
     created_at: datetime
-    
+
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class ExtractedTableResponse(BaseModel):
+    """Structured table record returned by the API."""
+
     id: int
     file_id: int
     page: int
@@ -163,10 +228,14 @@ class ExtractedTableResponse(BaseModel):
     created_at: datetime
 
     class Config:
+        """Enable ORM attribute population."""
+
         from_attributes = True
 
 
 class TablePreview(BaseModel):
+    """A single table in a stateless preview response."""
+
     page: int
     index: int
     source: Optional[str] = None
@@ -179,11 +248,15 @@ class TablePreview(BaseModel):
 
 
 class TablePreviewResponse(BaseModel):
+    """Result of previewing a file's tables off disk."""
+
     tables_found: int
     tables: List[TablePreview] = []
 
 
 class FileProcessingResult(BaseModel):
+    """Summary of a completed processing run."""
+
     file_id: int
     status: FileStatus
     extracted_kpis: List[ExtractedKPIResponse] = []
@@ -192,12 +265,16 @@ class FileProcessingResult(BaseModel):
 
 
 class FileUploadResponse(BaseModel):
+    """Response returned after an upload."""
+
     file: FileResponse
     upload_url: Optional[str] = None
     message: str
 
 
 class DocumentSearchQuery(BaseModel):
+    """Semantic document-search request."""
+
     query: str
     file_ids: Optional[List[int]] = None
     organization_id: int
@@ -206,8 +283,10 @@ class DocumentSearchQuery(BaseModel):
 
 
 class DocumentSearchResult(BaseModel):
+    """A single semantic-search hit."""
+
     content_chunk: str
     file_id: int
     filename: str
     similarity_score: float
-    chunk_metadata: Dict[str, Any] = {} 
+    chunk_metadata: Dict[str, Any] = {}

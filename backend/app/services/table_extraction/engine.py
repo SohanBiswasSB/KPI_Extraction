@@ -11,6 +11,8 @@ import os
 import uuid
 from typing import List, Optional, Set
 
+import pandas as pd
+
 from .models import ExtractedTable
 from . import pdf_tables, office_tables, ocr_tables, vlm_tables
 
@@ -114,8 +116,6 @@ def export_tables(tables: List[ExtractedTable], out_dir: str) -> dict:
 
     Returns {"xlsx": path, "csv_files": [...], "count": n}.
     """
-    import pandas as pd
-
     os.makedirs(out_dir, exist_ok=True)
     uid = uuid.uuid4().hex[:8]
     xlsx_path = os.path.join(out_dir, f"tables_{uid}.xlsx")
@@ -136,8 +136,6 @@ def export_tables(tables: List[ExtractedTable], out_dir: str) -> dict:
 
 
 def _table_to_df(t: ExtractedTable):
-    import pandas as pd
-
     rows = t.rows or [[]]
     header = [str(c) if c is not None else f"col_{j}" for j, c in enumerate(rows[0])]
     df = pd.DataFrame(rows[1:], columns=header) if len(rows) > 1 else pd.DataFrame(columns=header)

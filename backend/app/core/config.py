@@ -1,37 +1,65 @@
-from pydantic_settings import BaseSettings
-from typing import List, Optional
+"""Application settings loaded from environment variables / .env."""
 import os
+from typing import List, Optional
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    """Typed application configuration with sensible local-first defaults."""
+
     # Application settings
     APP_NAME: str = "KPI Extraction Platform"
     VERSION: str = "1.0.0"
     DEBUG: bool = False
-    
+
     # Database settings
     DATABASE_URL: str = "postgresql://kpi_user:kpi_password@localhost:5432/kpi_platform"
-    
+
     # Security settings
     SECRET_KEY: str = "your-secret-key-change-in-production"
     JWT_SECRET: str = "your-jwt-secret-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    
-    # LLM settings — local-first via an OpenAI-compatible server (Ollama/vLLM/LM Studio).
+
+    # LLM settings - local-first via an OpenAI-compatible server (LM Studio/Ollama/vLLM).
     # No API key required for local models; LLM_API_KEY is any non-empty placeholder.
     # Point LLM_BASE_URL at a hosted OpenAI endpoint instead to use cloud models.
-    LLM_BASE_URL: str = "http://localhost:11434/v1"   # Ollama default
-    LLM_API_KEY: Optional[str] = None                  # falls back to "ollama" if unset
-    LLM_MODEL: str = "qwen2.5:7b-instruct"             # text → KPI structuring
-    LLM_VISION_MODEL: str = "qwen2.5vl:7b"             # vision → tables from page images
-    LLM_EMBEDDING_MODEL: str = "nomic-embed-text"      # local embeddings (768-dim)
+    #
+    # --- Ollama defaults (disabled; not in use) -------------------------------
+    # LLM_BASE_URL: str = "http://localhost:11434/v1"  # Ollama default
+    # LLM_MODEL: str = "qwen2.5:7b-instruct"           # text -> KPI structuring
+    # LLM_VISION_MODEL: str = "qwen2.5vl:7b"           # vision -> tables from page images
+    # LLM_EMBEDDING_MODEL: str = "nomic-embed-text"    # local embeddings (768-dim)
+    # --------------------------------------------------------------------------
+    #
+    # Active: LM Studio's OpenAI-compatible server (default port 1234).
+    LLM_BASE_URL: str = "http://localhost:1234/v1"
+    LLM_API_KEY: Optional[str] = None                  # falls back to a placeholder if unset
+    LLM_MODEL: str = "qwen2.5-7b-instruct-1m"
+
+    # Vision path (scanned pages -> tables). Only used when ENABLE_VLM is true.
+    # NOTE: qwen2.5-7b-instruct is TEXT-ONLY, so this points at a genuinely
+    # multimodal model. On a 24GB machine the two cannot be resident together
+    # (15.6GB + 4.7GB), so enabling VLM means swapping LLM_MODEL as well.
+    LLM_VISION_MODEL: str = "google/gemma-4-26b-a4b-qat"
+
+    # EmbeddingGemma-300M: 768-dim, matches vector(768) in init.sql. Tiny (229MB),
+    # so it stays resident alongside the 4.7GB chat model.
+    LLM_EMBEDDING_MODEL: str = "text-embedding-embeddinggemma-300m-qat"
+
+    # Reasoning models (Qwen3, Gemma-4) spend their whole token budget "thinking"
+    # and often return an empty message; prefilling an already-closed think block
+    # makes them answer immediately (measured 59s/empty -> 7s/correct on
+    # bonsai-27b). qwen2.5-7b-instruct is NOT a reasoning model, so this is
+    # disabled - set it to "<think>\n\n</think>\n\n" if you switch back.
+    LLM_THINK_PREFILL: str = ""
 
     # Back-compat: legacy code/env may still reference these.
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "qwen2.5:7b-instruct"
-    OPENAI_EMBEDDING_MODEL: str = "nomic-embed-text"
+    OPENAI_MODEL: str = "google/gemma-4-26b-a4b-qat"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-embeddinggemma-300m-qat"
 
     # File upload settings
     UPLOAD_DIR: str = "uploads"
@@ -59,7 +87,7 @@ class Settings(BaseSettings):
     # leave it off to keep extraction fully deterministic/offline.
     ENABLE_VLM: bool = False
     VLM_MAX_PAGES: int = 10          # cap pages sent to the VLM per document
-    
+
     # CORS settings
     ALLOWED_HOSTS: List[str] = [
         "http://localhost:3000",
@@ -67,23 +95,91 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001"
     ]
-    
+
     # Redis settings
     REDIS_URL: str = "redis://localhost:6379"
-    
+
+    # KPI extraction scans the document in windows rather than only the first
+    # 4000 chars (which on a 10-K is just the SEC cover page). Window size must
+    # leave room for the reply inside the model's loaded context.
+    # Hard upper bound on a single extraction window. Normally it does not
+    # bind: the real size is measured per document against the loaded model
+    # (see services/windowing.py), which is both safer on table-dense text and
+    # far larger on prose. Kept as an escape hatch for forcing small windows.
+    KPI_WINDOW_CHARS: int = 120000
+    KPI_MAX_WINDOWS: int = 40
+    # How many extraction windows are in flight at once.
+    #
+    # MEASURED, and counter-intuitive: the model's context is shared across
+    # in-flight requests, not allocated per slot. On LM Studio at ctx 16384
+    # with unified KV cache, an 11,891-token prompt succeeds alone and fails
+    # with "Context size has been exceeded" the moment a second request runs
+    # beside it. Concurrency therefore DIVIDES the budget each request gets:
+    # at 2 a window may only be ~5.4k tokens, at 1 it can be ~13.6k.
+    #
+    # Since halving the window roughly doubles the window count, concurrency
+    # buys little here and costs correctness if the window sizing forgets to
+    # divide (see services/windowing.py, which now does). 1 keeps the largest
+    # possible window and the fewest calls.
+    KPI_CONCURRENCY: int = 1
+
+    # --- Contextual retrieval -------------------------------------------
+    # Generate a one-sentence description of each chunk and prepend it before
+    # embedding and lexical indexing, so a chunk carries terms that situate it
+    # in the document rather than only the words it happens to contain.
+    #
+    # Off by default: this turns a ~15 second embedding stage into minutes,
+    # which should be a deliberate choice per environment rather than a silent
+    # regression in upload time.
+    CONTEXTUAL_CHUNKS: bool = True
+    # A small instruct model is enough to situate an excerpt and leaves the
+    # 7B free. Blank falls back to LLM_MODEL. Note this is the plain instruct
+    # build, not the VL (vision) or Coder variant of the same size.
+    CONTEXT_MODEL: str = "qwen2.5-3b-instruct"
+    # Measured on an M4 Pro against the loaded 7B: 12 chunks took 14.2s at
+    # concurrency 1, 6.2s at 2, and 6.9s at 4. The GPU saturates at two
+    # in-flight requests, so raising this past 2 buys nothing on this hardware
+    # even though LM Studio exposes 6 slots. Safe to run concurrently despite
+    # the shared context noted on KPI_CONCURRENCY, because these prompts are
+    # one chunk each (~500 tokens), not a whole extraction window.
+    CONTEXT_CONCURRENCY: int = 2
+    CONTEXT_MAX_CHARS: int = 1500   # of the chunk shown to the context model
+    # ...and of the line it generates. This is the reservation the chunker
+    # holds back for that line, so the two must stay equal or the assembled
+    # chunk exceeds the size it was measured against. 240 characters is the
+    # "under 30 words" the prompt already asks for; a longer reply ignored the
+    # instruction, and _accept drops it rather than truncating mid-sentence.
+    CONTEXT_MAX_OUTPUT_CHARS: int = 240
+
     # Vector database settings
-    VECTOR_DIMENSION: int = 768  # nomic-embed-text dimension (must match init.sql + LLM_EMBEDDING_MODEL)
-    
+    # Must match LLM_EMBEDDING_MODEL and the vector() dimension in init.sql.
+    VECTOR_DIMENSION: int = 768  # nomic-embed-text dimension
+
     # Pagination settings
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
-    
-    # AI processing settings
+
+    # AI processing settings.
+    # CHUNK_SIZE is the fallback only. The real size is measured per document
+    # from the embedding model's loaded context and its own tokenizer (see
+    # windowing.chunk_chars), because a character count says nothing about
+    # whether a chunk fits: financial rows and prose differ by more than 3x in
+    # chars per token inside one filing. This value applies when the model
+    # server does not report a context length.
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
+    # EmbeddingGemma-300M's native window. Used when /api/v0/models does not
+    # report loaded_context_length, so it must be the conservative figure.
+    EMBEDDING_CONTEXT_TOKENS: int = 2048
+    # Chunks are capped well under the window on purpose: a chunk that fills
+    # the context is a chunk whose vector averages several unrelated topics,
+    # which retrieves worse than a smaller one even though it fits.
+    EMBEDDING_CHUNK_TOKENS: int = 512
     MAX_TOKENS: int = 4000
-    
+
     class Config:
+        """Pydantic settings configuration."""
+
         env_file = ".env"
         case_sensitive = True
 
@@ -92,4 +188,4 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Ensure upload directory exists
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True) 
+os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

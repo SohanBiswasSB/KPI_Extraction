@@ -18,6 +18,8 @@ sqlalchemy==2.0.41
 alembic==1.16.1
 asyncpg==0.30.0
 psycopg2-binary==2.9.10
+greenlet==3.5.5           # required by SQLAlchemy's async engine (asyncio greenlet bridge)
+pgvector==0.5.0            # Vector column type for SQLAlchemy (document/KPI embeddings)
 
 # --- Auth / security ---
 python-jose[cryptography]==3.4.0

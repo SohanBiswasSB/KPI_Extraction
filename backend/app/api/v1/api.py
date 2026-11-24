@@ -1,3 +1,4 @@
+"""API v1 router aggregating all endpoint routers."""
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import auth, users, kpis, dashboards, files, organizations, analytics
@@ -11,4 +12,4 @@ api_router.include_router(organizations.router, prefix="/organizations", tags=["
 api_router.include_router(kpis.router, prefix="/kpis", tags=["kpis"])
 api_router.include_router(dashboards.router, prefix="/dashboards", tags=["dashboards"])
 api_router.include_router(files.router, prefix="/files", tags=["files"])
-api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"]) 
+api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])

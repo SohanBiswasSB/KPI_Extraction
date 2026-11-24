@@ -19,10 +19,12 @@ import sys
 # allow running from the backend/ directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# pylint: disable=wrong-import-position
 from app.services.table_extraction import extract_tables, export_tables  # noqa: E402
 
 
 def main() -> int:
+    """Parse CLI args, run the extraction engine, and print/export the tables."""
     ap = argparse.ArgumentParser(description="Extract structured tables from a document.")
     ap.add_argument("file", help="Path to a PDF / XLSX / XLS / CSV / DOCX / image")
     ap.add_argument("--export", metavar="DIR", help="Also write XLSX + per-table CSV to DIR")

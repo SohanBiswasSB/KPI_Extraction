@@ -24,17 +24,17 @@ logger = logging.getLogger(__name__)
 
 try:
     import fitz  # PyMuPDF
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     fitz = None
 
 try:
     from PIL import Image
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     Image = None
 
 try:
     import openai
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     openai = None
 
 
@@ -50,11 +50,12 @@ _PROMPT = (
 
 
 def is_available() -> bool:
+    """True if the VLM dependencies (openai, PyMuPDF, Pillow) are importable."""
     return fitz is not None and Image is not None and openai is not None
 
 
 def _client(base_url: str, api_key: Optional[str]):
-    return openai.OpenAI(base_url=base_url, api_key=api_key or "ollama")
+    return openai.OpenAI(base_url=base_url, api_key=api_key or "local")
 
 
 def _png_data_uri(img) -> str:
@@ -125,6 +126,10 @@ def _extract_from_image(img, page: int, model: str, base_url: str,
 def extract_pdf(pdf_path: str, model: str, base_url: str, api_key: Optional[str] = None,
                 dpi: int = 200, page_filter: Set[int] | None = None,
                 max_pages: int = 10) -> List[ExtractedTable]:
+    """Render up to `max_pages` PDF pages and extract their tables with the vision model.
+
+    Returns an empty list (logged) if the dependencies or model server are unavailable.
+    """
     if not is_available():
         logger.warning("VLM extraction unavailable (need openai + PyMuPDF + Pillow).")
         return []
@@ -151,6 +156,10 @@ def extract_pdf(pdf_path: str, model: str, base_url: str, api_key: Optional[str]
 
 def extract_image(image_path: str, model: str, base_url: str,
                   api_key: Optional[str] = None) -> List[ExtractedTable]:
+    """Extract tables from a single image file using the vision model.
+
+    Returns an empty list (logged) if the dependencies or model server are unavailable.
+    """
     if not is_available():
         logger.warning("VLM extraction unavailable (need openai + Pillow).")
         return []

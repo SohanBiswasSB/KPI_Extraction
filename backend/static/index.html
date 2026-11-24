@@ -1,0 +1,1065 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KPI Admin</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#fff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb;
+  --accent:#2563eb; --accent-ink:#fff; --ok:#059669; --warn:#b45309; --err:#dc2626;
+  --chip:#f3f4f6; --live:#10b981;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#0f1115; --panel:#171a21; --ink:#e5e7eb; --muted:#9ca3af; --line:#262b36;
+  --accent:#3b82f6; --chip:#20242e;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+  background:var(--panel);color:var(--ink);padding:7px 13px}
+button.p{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+button.d{color:var(--err)}
+button:disabled{opacity:.5;cursor:not-allowed}
+input,select,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);
+  border-radius:8px;background:var(--panel);color:var(--ink);width:100%}
+.hide{display:none!important}
+
+#login{max-width:340px;margin:14vh auto;padding:26px;background:var(--panel);
+  border:1px solid var(--line);border-radius:14px}
+#login h1{margin:0 0 4px;font-size:19px}
+#login p{margin:0 0 18px;color:var(--muted);font-size:13px}
+#login label{display:block;margin:12px 0 5px;font-size:12px;color:var(--muted)}
+
+#app{display:grid;grid-template-columns:210px 1fr;min-height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;
+  display:flex;flex-direction:column;gap:3px}
+.brand{font-weight:650;padding:6px 10px 14px;font-size:15px}
+nav button{width:100%;text-align:left;border:0;background:transparent;padding:9px 11px;
+  color:var(--muted);border-radius:8px}
+nav button.on{background:var(--chip);color:var(--ink);font-weight:600}
+.who{margin-top:auto;padding:10px;border-top:1px solid var(--line);
+  font-size:12px;color:var(--muted)}
+main{padding:22px 26px;min-width:0;overflow-x:auto}
+
+/* live header */
+.head{display:flex;align-items:flex-start;gap:14px;margin-bottom:18px;flex-wrap:wrap}
+.head h2{margin:0 0 3px;font-size:20px}
+.head .sub{color:var(--muted);margin:0;font-size:13px}
+.livebar{margin-left:auto;display:flex;align-items:center;gap:9px;font-size:12px;
+  color:var(--muted);white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--live);
+  box-shadow:0 0 0 0 rgba(16,185,129,.6);animation:pulse 2s infinite}
+.dot.off{background:var(--muted);animation:none;box-shadow:none}
+@keyframes pulse{70%{box-shadow:0 0 0 6px rgba(16,185,129,0)}
+                100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
+.livebar button{padding:4px 9px;font-size:12px}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:16px;margin-bottom:16px}
+.card h3{margin:0 0 12px;font-size:14px;display:flex;align-items:center;gap:8px}
+.card h3 button{margin-left:auto}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;
+  margin-bottom:16px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+.tile .n{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums;
+  transition:color .3s}
+.tile .n.bump{color:var(--live)}
+.tile .l{color:var(--muted);font-size:12px;margin-top:2px}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);
+  vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;
+  letter-spacing:.04em}
+tbody tr:last-child td{border-bottom:0}
+tbody tr.fresh{animation:flash 1.4s ease-out}
+@keyframes flash{from{background:rgba(16,185,129,.14)}to{background:transparent}}
+.tw{overflow-x:auto}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;background:var(--chip);
+  font-size:11px}
+.chip.ok{color:var(--ok)} .chip.warn{color:var(--warn)} .chip.err{color:var(--err)}
+.chip.live{color:var(--live)}
+.row{display:flex;gap:9px;align-items:end;flex-wrap:wrap}
+.row>div{flex:1;min-width:150px}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.acts button{padding:4px 9px;font-size:12px}
+.empty{color:var(--muted);padding:22px;text-align:center}
+label.f{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+pre{background:var(--chip);padding:11px;border-radius:8px;overflow-x:auto;font-size:12px;
+  margin:0}
+#toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;
+  z-index:50}
+.t{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:8px;padding:10px 14px;box-shadow:0 6px 20px #0002;max-width:340px;
+  font-size:13px}
+.t.err{border-left-color:var(--err)} .t.ok{border-left-color:var(--ok)}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);
+  border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;
+  vertical-align:-2px}
+@keyframes s{to{transform:rotate(360deg)}}
+.bar{height:3px;background:var(--chip);border-radius:2px;overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;width:30%;background:var(--accent);border-radius:2px;
+  animation:slide 1.3s ease-in-out infinite}
+.bar.det i{animation:none;transition:width .4s ease}
+@keyframes slide{0%{margin-left:-30%}100%{margin-left:100%}}
+.stale{opacity:.55;transition:opacity .2s}
+
+/* pipeline stepper */
+.steps{display:flex;gap:0;margin:10px 0 2px;flex-wrap:wrap}
+.step{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);
+  padding:5px 12px 5px 0}
+.step .ic{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line);
+  display:grid;place-items:center;font-size:9px;flex:none}
+.step.done{color:var(--ok)} .step.done .ic{border-color:var(--ok);background:var(--ok);
+  color:#fff}
+.step.now{color:var(--accent);font-weight:600}
+.step.now .ic{border-color:var(--accent);border-top-color:transparent;
+  animation:s .7s linear infinite}
+.step .arrow{color:var(--line);margin-left:6px}
+
+/* dropzone */
+.drop{border:1.5px dashed var(--line);border-radius:10px;padding:22px;text-align:center;
+  color:var(--muted);transition:all .15s;cursor:pointer}
+.drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 7%,transparent);
+  color:var(--accent)}
+.drop b{color:var(--ink)}
+.drop .fname{color:var(--ink);font-weight:600}
+
+/* empty state */
+.es{text-align:center;padding:34px 20px;color:var(--muted)}
+.es .big{font-size:15px;color:var(--ink);font-weight:600;margin-bottom:5px}
+.es code{background:var(--chip);padding:2px 6px;border-radius:5px;font-size:12px}
+
+/* activity strip */
+.act{display:flex;align-items:center;gap:10px;background:var(--panel);
+  border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;
+  padding:11px 14px;margin-bottom:14px;font-size:13px}
+
+/* chat: conversation on the left, sources for the selected answer on the right */
+.chatwrap{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:16px;
+  height:calc(100vh - 230px);min-height:440px}
+@media (max-width:1100px){.chatwrap{grid-template-columns:1fr;height:auto}}
+.chat{display:flex;flex-direction:column;min-width:0}
+.thread{flex:1;overflow-y:auto;padding:4px 2px 12px;display:flex;
+  flex-direction:column;gap:14px}
+.msg{display:flex;gap:10px;max-width:min(760px,94%)}
+.msg.me{align-self:flex-end;flex-direction:row-reverse}
+.avatar{width:26px;height:26px;border-radius:50%;flex:none;display:grid;
+  place-items:center;font-size:11px;font-weight:650;background:var(--chip);
+  color:var(--muted)}
+.msg.me .avatar{background:var(--accent);color:var(--accent-ink)}
+.bubble{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:11px 14px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.msg.me .bubble{background:var(--accent);color:var(--accent-ink);
+  border-color:transparent}
+.msg.bot .bubble{cursor:pointer}
+.msg.bot.sel .bubble{border-color:var(--accent);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 18%,transparent)}
+.meta{font-size:11px;color:var(--muted);margin-top:6px}
+.msg.me .meta{text-align:right}
+.composer{border-top:1px solid var(--line);padding-top:12px;display:flex;gap:9px;
+  align-items:flex-end}
+.composer textarea{resize:none;min-height:44px;max-height:180px}
+.typing span{display:inline-block;width:6px;height:6px;margin-right:3px;
+  border-radius:50%;background:var(--muted);animation:blink 1.2s infinite}
+.typing span:nth-child(2){animation-delay:.2s}
+.typing span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,60%,100%{opacity:.25}30%{opacity:1}}
+
+/* sources panel */
+.srcpane{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.srcpane h4{margin:0;padding:13px 15px;border-bottom:1px solid var(--line);
+  font-size:13px;display:flex;align-items:center;gap:8px}
+.srclist{overflow-y:auto;padding:12px 15px;flex:1}
+.srcitem{border:1px solid var(--line);border-radius:9px;padding:10px;
+  margin-bottom:10px}
+.srcitem .top{font-size:11px;color:var(--muted);margin-bottom:6px;
+  display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.srcitem pre{max-height:200px;overflow:auto;font-size:11px}
+.srcq{font-size:12px;color:var(--muted);padding:0 15px 10px;
+  border-bottom:1px solid var(--line)}
+kbd{background:var(--chip);border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:5px;padding:1px 5px;font-size:11px;font-family:inherit}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>KPI Admin</h1>
+  <p>Sign in to the extraction platform</p>
+  <label>Email</label>
+  <input id="lu" type="email" value="sohanbiswas09@gmail.com" autocomplete="username">
+  <label>Password</label>
+  <input id="lp" type="password" value="TestPass123!" autocomplete="current-password">
+  <button class="p" id="lb" style="width:100%;margin-top:16px">Sign in</button>
+  <div id="lerr" style="color:var(--err);font-size:12px;margin-top:10px"></div>
+</div>
+
+<div id="app" class="hide">
+  <aside>
+    <div class="brand">KPI Admin</div>
+    <nav id="nav"></nav>
+    <div class="who"><span id="who"></span><br>
+      <button id="out" style="margin-top:8px;padding:4px 9px;font-size:12px">Sign out</button>
+    </div>
+  </aside>
+  <main id="view"></main>
+</div>
+<div id="toast"></div>
+
+<script>
+const API='/api/v1';
+let TOK=localStorage.getItem('kpi_tok')||'';
+let ME=null, ORG=+(localStorage.getItem('kpi_org')||1), ORGS=[];
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=d=>d?new Date(d).toLocaleString():'-';
+
+/* ---------- live refresh engine ---------- */
+let TICK=null, LAST=0, AUTO=localStorage.getItem('kpi_auto')!=='0';
+let CURRENT=null;          // async () => void   : refresh fn for the active view
+let INFLIGHT=false;        // guards overlapping refreshes
+let FAST=false;            // true while something is mid-processing
+
+function stopTick(){ if(TICK){ clearInterval(TICK); TICK=null; } }
+function startTick(){
+  stopTick();
+  if(!AUTO||!CURRENT) { paintAge(); return; }
+  TICK=setInterval(async ()=>{
+    if(document.hidden||INFLIGHT) return;   // don't poll a hidden tab
+    await refreshNow(true);
+  }, FAST?2000:6000);
+}
+async function refreshNow(silent){
+  if(!CURRENT||INFLIGHT) return;
+  INFLIGHT=true;
+  const body=$('#body'); if(body&&!silent) body.classList.add('stale');
+  try{ await CURRENT(); LAST=Date.now(); }
+  catch(e){ if(!silent) toast(e.message,'err'); }
+  finally{ INFLIGHT=false; if(body) body.classList.remove('stale'); paintAge(); }
+}
+function paintAge(){
+  const el=$('#age'); if(!el) return;
+  if(!LAST){ el.textContent='-'; return; }
+  const s=Math.round((Date.now()-LAST)/1000);
+  el.textContent = s<2?'just now':`${s}s ago`;
+  const d=$('#dot'); if(d) d.className='dot'+(AUTO?'':' off');
+}
+setInterval(paintAge,1000);
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) refreshNow(true); });
+
+/* header with live controls; every view uses this */
+function head(title, sub){
+  return `<div class="head"><div><h2>${esc(title)}</h2><p class="sub">${sub||''}</p></div>
+    <div class="livebar">
+      <span id="dot" class="dot${AUTO?'':' off'}"></span>
+      <span>updated <b id="age">-</b></span>
+      <button id="refreshBtn">Refresh</button>
+      <button id="autoBtn">${AUTO?'Auto: on':'Auto: off'}</button>
+    </div></div><div id="body"></div>`;
+}
+function wireHead(){
+  const r=$('#refreshBtn'); if(r) r.onclick=()=>refreshNow(false);
+  const a=$('#autoBtn'); if(a) a.onclick=()=>{
+    AUTO=!AUTO; localStorage.setItem('kpi_auto',AUTO?'1':'0');
+    a.textContent=AUTO?'Auto: on':'Auto: off'; startTick(); paintAge();
+  };
+}
+
+function toast(msg,kind){
+  const el=document.createElement('div');
+  el.className='t'+(kind?' '+kind:''); el.textContent=msg;
+  $('#toast').append(el); setTimeout(()=>el.remove(),5200);
+}
+
+async function api(path,opts={}){
+  const o={...opts,headers:{...(opts.headers||{})}};
+  if(TOK) o.headers.Authorization='Bearer '+TOK;
+  const r=await fetch(API+path,o);
+  if(r.status===401){ logout(); throw new Error('Session expired - sign in again'); }
+  const ct=r.headers.get('content-type')||'';
+  const body=ct.includes('json')?await r.json().catch(()=>null):await r.text();
+  if(!r.ok){
+    let m=body&&body.detail?body.detail:('HTTP '+r.status);
+    if(Array.isArray(m)) m=m.map(x=>(x.loc||[]).slice(-1)[0]+': '+x.msg).join('; ');
+    throw new Error(typeof m==='string'?m:JSON.stringify(m));
+  }
+  return body;
+}
+
+/* ---------- auth ---------- */
+async function login(){
+  $('#lerr').textContent=''; $('#lb').disabled=true;
+  try{
+    const b=new URLSearchParams({username:$('#lu').value,password:$('#lp').value});
+    const r=await fetch(API+'/auth/login',{method:'POST',body:b,
+      headers:{'Content-Type':'application/x-www-form-urlencoded'}});
+    const j=await r.json();
+    if(!r.ok) throw new Error(j.detail||'Login failed');
+    TOK=j.access_token; localStorage.setItem('kpi_tok',TOK); await boot();
+  }catch(e){ $('#lerr').textContent=e.message; }
+  finally{ $('#lb').disabled=false; }
+}
+function logout(){
+  stopTick(); CURRENT=null; TOK=''; localStorage.removeItem('kpi_tok');
+  $('#app').classList.add('hide'); $('#login').classList.remove('hide');
+}
+
+/* ---------- shell ---------- */
+const PAGES=[['overview','Overview'],['files','Files'],['ask','Ask'],['kpis','KPIs'],
+             ['users','Users'],['orgs','Organizations']];
+let PAGE='overview';
+
+async function boot(){
+  try{ ME=await api('/auth/me'); }catch(e){ return logout(); }
+  $('#login').classList.add('hide'); $('#app').classList.remove('hide');
+  $('#who').innerHTML=esc(ME.email)+'<br><span class="chip">'+esc(ME.role)+'</span>';
+  try{ ORGS=await api('/organizations/'); }catch(e){ ORGS=[]; }
+  await loadLookups();
+  if(ORGS.length && !ORGS.find(o=>o.id===ORG)) ORG=ORGS[0].id;
+  $('#nav').innerHTML=PAGES.map(([k,l])=>
+    '<button data-p="'+k+'">'+l+'</button>').join('');
+  $('#nav').onclick=e=>{ const b=e.target.closest('button');
+    if(b&&b.dataset.p!==PAGE){ PAGE=b.dataset.p; render(); } };
+  render();
+}
+function render(){
+  stopTick(); CURRENT=null; FAST=false; LAST=0;
+  document.querySelectorAll('#nav button').forEach(b=>
+    b.classList.toggle('on',b.dataset.p===PAGE));
+  ({overview:vOverview,files:vFiles,ask:vAsk,kpis:vKpis,users:vUsers,
+    orgs:vOrgs})[PAGE]();
+}
+function orgPicker(){
+  if(ORGS.length<2) return '';
+  return '<div style="margin-bottom:14px"><label class="f">Organization</label>'+
+    '<select id="orgsel" style="max-width:260px">'+ORGS.map(o=>
+      '<option value="'+o.id+'"'+(o.id===ORG?' selected':'')+'>'+esc(o.name)+
+      '</option>').join('')+'</select></div>';
+}
+function wireOrg(){ const s=$('#orgsel');
+  if(s) s.onchange=()=>{ ORG=+s.value; localStorage.setItem('kpi_org',ORG); render(); }; }
+
+/* Ask history: questions and answers survive tab switches and reloads.
+   Kept per browser in localStorage; nothing leaves the machine. */
+const ASK_KEY='kpi_ask_history', ASK_MAX=50;
+function askHistory(){
+  try{ return JSON.parse(localStorage.getItem(ASK_KEY)||'[]'); }catch(e){ return []; }
+}
+function askSave(entry){
+  const h=askHistory(); h.unshift(entry);
+  try{ localStorage.setItem(ASK_KEY, JSON.stringify(h.slice(0,ASK_MAX))); }catch(e){}
+}
+function askClear(){ try{ localStorage.removeItem(ASK_KEY); }catch(e){} }
+function askDelete(ts){
+  try{
+    localStorage.setItem(ASK_KEY,
+      JSON.stringify(askHistory().filter(x=>x.ts!==ts)));
+  }catch(e){}
+}
+
+/* remember previous values so changes can be highlighted */
+let PREV={};
+/* id -> display-name maps so file rows can show who uploaded and for which org */
+let USERMAP={}, ORGMAP={};
+function nameOfUser(id){ return USERMAP[id] || (id?('user #'+id):'-'); }
+function nameOfOrg(id){ return ORGMAP[id] || (id?('org #'+id):'-'); }
+async function loadLookups(){
+  try{
+    const [us,os]=await Promise.all([
+      api('/users/?limit=500').catch(()=>[]),
+      api('/organizations/').catch(()=>[]),
+    ]);
+    USERMAP={}; us.forEach(u=>USERMAP[u.id]=u.full_name||u.username||u.email);
+    ORGMAP={};  os.forEach(o=>ORGMAP[o.id]=o.name);
+    if(os.length) ORGS=os;
+  }catch(e){ /* names are cosmetic; never block the table */ }
+}
+function tile(key,n,l){
+  const bumped = PREV[key]!==undefined && PREV[key]!==n;
+  PREV[key]=n;
+  return `<div class="tile"><div class="n${bumped?' bump':''}">${n}</div>
+    <div class="l">${l}</div></div>`;
+}
+
+/* ---------- overview ---------- */
+async function vOverview(){
+  $('#view').innerHTML=head('Overview','KPI Extraction Platform - local instance');
+  wireHead();
+  CURRENT=async()=>{
+    const [files,kpis,users]=await Promise.all([
+      api('/files/?limit=500'), api('/kpis/?organization_id='+ORG),
+      api('/users/?limit=500'),
+    ]);
+    const done=files.filter(f=>f.status==='completed').length;
+    const busy=files.filter(f=>f.status!=='completed'&&f.status!=='failed').length;
+    FAST = busy>0;
+    $('#body').innerHTML='<div class="tiles">'+
+      tile('f',files.length,'Files uploaded')+ tile('p',done,'Processed')+
+      tile('k',kpis.length,'KPIs')+ tile('u',users.length,'Users')+
+      tile('o',ORGS.length,'Organizations')+'</div>'+
+      (busy?'<div class="card"><h3><span class="spin"></span> '+busy+
+        ' file(s) still processing</h3><div class="bar"><i></i></div></div>':'')+
+      '<div class="card"><h3>Recent files</h3>'+filesTable(files.slice(0,5),false)+
+      '<div style="color:var(--muted);font-size:12px;margin-top:10px">'+
+      'Open <b>Files</b> to upload, extract and inspect.</div></div>';
+  };
+  await refreshNow(false); startTick();
+}
+
+/* ---------- files ---------- */
+const STAGES=[['extracting_tables','Tables'],['extracting_kpis','KPIs'],
+              ['contextualizing','Context'],['embedding','Embeddings'],['done','Done']];
+const STAGE_LABEL={extracting_tables:'Extracting tables',tables_done:'Tables extracted',
+  extracting_kpis:'Extracting KPIs with the model',
+  contextualizing:'Writing chunk context',embedding:'Building embeddings',
+  done:'Complete'};
+/* Durations are reported by the backend in seconds. */
+function fmtDur(s){
+  if(s===null||s===undefined) return '-';
+  s=Math.round(s);
+  if(s<60) return s+'s';
+  const m=Math.floor(s/60), r=s%60;
+  if(m<60) return m+'m'+(r?' '+r+'s':'');
+  return Math.floor(m/60)+'h '+(m%60)+'m';
+}
+/* ETA from the current stage's own throughput. Both timestamps come from the
+   server, so this never depends on the browser clock agreeing with it. */
+function etaOf(meta){
+  const m=meta||{};
+  if(!m.items_total||!m.stage_started_at||!m.updated_at) return null;
+  const done=m.items_done||0; if(done<=0) return null;
+  const el=m.updated_at-m.stage_started_at; if(el<=0) return null;
+  return Math.max(0,(m.items_total-done)*(el/done));
+}
+function totalTime(meta){
+  const m=meta||{}, v=Object.values(m.timings||{});
+  let t=v.length?v.reduce((a,b)=>a+b,0):0;
+  /* Add the stage still running, otherwise elapsed reads lower than the ETA
+     printed beside it. Both timestamps are the server's. */
+  if(m.stage&&m.stage!=='done'&&m.stage_started_at&&m.updated_at)
+    t+=Math.max(0,m.updated_at-m.stage_started_at);
+  return (v.length||t)?t:null;
+}
+/* Where the time actually went, stage by stage. */
+function timingList(meta){
+  const t=(meta||{}).timings||{}, ks=Object.keys(t);
+  if(!ks.length) return '';
+  return ks.map(k=>esc(STAGE_LABEL[k]||k)+' '+fmtDur(t[k])).join(' &middot; ');
+}
+function statusChip(f){
+  const s=f.status, st=(f.processing_metadata||{}).stage;
+  if(s==='completed') return '<span class="chip ok">completed</span>';
+  if(s==='failed')    return '<span class="chip err">failed</span>';
+  const pct=progressPct(f.processing_metadata);
+  return '<span class="chip warn"><span class="spin"></span> '+
+    esc(STAGE_LABEL[st]||s||'pending')+(pct!==null?' '+pct+'%':'')+'</span>';
+}
+/* Overall percent. Weights reflect measured wall-clock share of a large PDF:
+   table extraction is fast, KPI windows dominate, embeddings are batched. */
+const STAGE_WEIGHT={extracting_tables:[0,10],tables_done:[10,2],
+  extracting_kpis:[12,45],contextualizing:[57,33],embedding:[90,10],done:[100,0]};
+function progressPct(meta){
+  const m=meta||{}, st=m.stage||'';
+  const w=STAGE_WEIGHT[st]; if(!w) return null;
+  const [base,span]=w;
+  if(st==='done') return 100;
+  /* Every long stage now reports the same generic counters, so one branch
+     covers KPI windows, context generation and embedding batches alike. */
+  const frac=m.items_total?Math.min(1,(m.items_done||0)/m.items_total):0;
+  return Math.round(base + span*frac);
+}
+function progressDetail(meta){
+  const m=meta||{};
+  if(m.items_total)
+    return (m.items_label||'item')+' '+(m.items_done||0)+' of '+m.items_total;
+  if(m.stage==='embedding') return 'embedding chunks';
+  if(m.stage==='extracting_tables') return 'parsing pages';
+  return '';
+}
+
+/* real pipeline progress, driven by processing_metadata.stage from the backend */
+function stepper(meta){
+  const cur=(meta||{}).stage||'';
+  const order=['extracting_tables','tables_done','extracting_kpis',
+               'contextualizing','embedding','done'];
+  const at=order.indexOf(cur);
+  return '<div class="steps">'+STAGES.map(([key,label],i)=>{
+    const pos=order.indexOf(key);
+    const done = at>pos || cur==='done';
+    const now  = !done && (cur===key || (key==='extracting_tables'&&at<0));
+    return '<div class="step'+(done?' done':now?' now':'')+'">'+
+      '<span class="ic">'+(done?'OK':'')+'</span>'+esc(label)+'</div>'+
+      (i<STAGES.length-1?'<span class="step arrow">-&gt;</span>':'');
+  }).join('')+'</div>';
+}
+let SEEN=new Set();
+function filesTable(list,acts){
+  const A=acts!==false;
+  if(!list.length) return '<div class="es"><div class="big">No documents yet</div>'+
+    'Drop a PDF, XLSX, DOCX or CSV above to start. The pipeline will extract '+
+    'tables, pull KPIs, and index the text for search.</div>';
+  return '<div class="tw"><table><thead><tr><th>ID</th><th>Name</th><th>Type</th>'+
+    '<th>Size</th><th>Organization</th><th>Uploaded by</th><th>Status</th>'+
+    '<th>Tables</th><th>KPIs</th><th>Chunks</th><th>Time</th><th>Uploaded</th>'+
+    (A?'<th></th>':'')+'</tr></thead><tbody>'+
+    list.map(f=>{
+      const m=f.processing_metadata||{};
+      const isNew=A&&!SEEN.has(f.id); if(A) SEEN.add(f.id);
+      const busy=f.status!=='completed'&&f.status!=='failed';
+      return '<tr'+(isNew?' class="fresh"':'')+'><td>'+f.id+'</td><td>'+
+      esc(f.original_filename||f.filename)+'</td><td>'+
+      esc((f.file_type||'').split('/').pop())+'</td><td>'+
+      (f.file_size?(f.file_size/1024).toFixed(0)+' KB':'-')+'</td><td>'+
+      '<span class="chip">'+esc(nameOfOrg(f.organization_id))+'</span></td><td>'+
+      esc(nameOfUser(f.uploaded_by))+'</td><td>'+
+      statusChip(f)+'</td><td>'+(m.tables_extracted??'-')+'</td><td>'+
+      (m.kpis_extracted??'-')+'</td><td>'+(m.embeddings_created??'-')+
+      '</td><td'+(timingList(m)?' title="'+timingList(m).replace(/&middot;/g,'|')+'"':'')+
+      '>'+fmtDur(totalTime(m))+'</td><td>'+fmt(f.created_at)+'</td>'+
+      (A?'<td class="acts">'+
+        '<button data-t="'+f.id+'"'+(busy?' disabled':'')+'>Tables</button>'+
+        '<button data-x="'+f.id+'"'+(busy?' disabled':'')+'>Extract KPIs</button>'+
+        '<button data-k="'+f.id+'"'+(busy?' disabled':'')+'>KPIs</button>'+
+        '<button data-pr="'+f.id+'"'+(busy?' disabled':'')+'>-&gt; Curated</button>'+
+        '<button class="d" data-del="'+f.id+'">Delete</button>'+
+      '</td>':'')+'</tr>';
+    }).join('')+'</tbody></table></div>'+
+    (A?list.filter(f=>f.status!=='completed'&&f.status!=='failed').map(f=>
+      (function(){
+        const m=f.processing_metadata||{}, pct=progressPct(m), det=progressDetail(m);
+        const eta=etaOf(m), spent=totalTime(m), log=timingList(m);
+        return '<div class="act"><span class="spin"></span><div style="flex:1">'+
+          '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">'+
+          '<b>#'+f.id+' '+esc(f.original_filename||f.filename)+'</b>'+
+          (pct!==null?'<span class="chip live">'+pct+'%</span>':'')+
+          (det?'<span style="color:var(--muted);font-size:12px">'+esc(det)+
+            '</span>':'')+
+          (eta!==null?'<span class="chip">ETA '+fmtDur(eta)+'</span>':'')+
+          (spent!==null?'<span class="chip">elapsed '+fmtDur(spent)+'</span>':'')+
+          '</div>'+
+          stepper(m)+
+          (pct!==null?'<div class="bar det"><i style="width:'+pct+'%"></i></div>'
+                     :'<div class="bar"><i></i></div>')+
+          /* Stage-by-stage log: what has finished and how long each took. */
+          (log?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+
+            log+'</div>':'')+
+          '</div></div>';
+      })()).join(''):'');
+}
+async function vFiles(){
+  $('#view').innerHTML=head('Files','Upload a document and run extraction.');
+  wireHead();
+  $('#body').innerHTML=orgPicker()+
+    '<div class="card"><h3>Upload</h3>'+
+    '<div class="row" style="margin-bottom:12px">'+
+      '<div><label class="f">Organization (owns the file)</label>'+
+        '<select id="uorg">'+ORGS.map(o=>'<option value="'+o.id+'"'+
+          (o.id===ORG?' selected':'')+'>'+esc(o.name)+'</option>').join('')+
+        '</select></div>'+
+      '<div><label class="f">Uploaded by</label>'+
+        '<input value="'+esc((ME&&(ME.full_name||ME.username||ME.email))||'')+
+        '" disabled title="Files are attributed to the signed-in user"></div>'+
+    '</div>'+
+    '<div class="row">'+
+      '<div style="flex:2"><label class="f">Document</label>'+
+        '<div class="drop" id="drop"><b>Drop a file here</b> or click to browse<br>'+
+        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image | max 50 MB</span></div>'+
+        '<input type="file" id="uf" class="hide" '+
+        'accept=".pdf,.xlsx,.xls,.docx,.csv,.png,.jpg,.jpeg"></div>'+
+      '<div><label class="f">Description</label><input id="ud" placeholder="optional"></div>'+
+      '<div style="flex:0"><button class="p" id="ub" disabled>Upload</button></div>'+
+    '</div><div id="uprog"></div></div>'+
+    '<div class="card"><h3>All files</h3><div id="fl"><span class="spin"></span></div></div>'+
+    '<div id="detail"></div>';
+  wireOrg();
+  wireDrop();
+  $('#ub').onclick=upload;
+  CURRENT=async()=>{
+    if(!Object.keys(USERMAP).length) await loadLookups();
+    const list=await api('/files/?limit=200&organization_id='+ORG);
+    FAST = list.some(f=>f.status!=='completed'&&f.status!=='failed');
+    $('#fl').innerHTML=filesTable(list);
+    $('#fl').onclick=onFileAct;
+  };
+  await refreshNow(false); startTick();
+}
+function wireDrop(){
+  const z=$('#drop'), inp=$('#uf'), btn=$('#ub');
+  const show=()=>{
+    const f=inp.files[0];
+    z.innerHTML = f
+      ? '<span class="fname">'+esc(f.name)+'</span><br><span style="font-size:12px">'+
+        (f.size/1024).toFixed(0)+' KB | click to change</span>'
+      : '<b>Drop a file here</b> or click to browse<br>'+
+        '<span style="font-size:12px">PDF, XLSX, DOCX, CSV or image | max 50 MB</span>';
+    btn.disabled=!f;
+  };
+  z.onclick=()=>inp.click();
+  inp.onchange=show;
+  ['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{
+    e.preventDefault(); z.classList.add('over'); }));
+  ['dragleave','drop'].forEach(ev=>z.addEventListener(ev,e=>{
+    e.preventDefault(); z.classList.remove('over'); }));
+  z.addEventListener('drop',e=>{
+    const f=e.dataTransfer.files[0];
+    if(f){ const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files; show(); }
+  });
+  show();
+}
+
+function elapsed(el,label){
+  const t0=Date.now();
+  const id=setInterval(()=>{
+    el.innerHTML='<span class="spin"></span> '+label+' '+
+      Math.round((Date.now()-t0)/1000)+'s';
+  },500);
+  return ()=>clearInterval(id);
+}
+async function upload(){
+  const f=$('#uf').files[0];
+  if(!f) return toast('Choose a file first','err');
+  const fd=new FormData();
+  const targetOrg = +(($('#uorg')||{}).value || ORG);
+  fd.append('file',f); fd.append('organization_id',targetOrg);
+  if($('#ud').value) fd.append('description',$('#ud').value);
+  $('#ub').disabled=true;
+  $('#uprog').innerHTML='<div class="bar"><i></i></div><div id="uel" '+
+    'style="font-size:12px;color:var(--muted);margin-top:6px"></div>'+
+    '<div style="font-size:12px;color:var(--muted);margin-top:4px">'+
+    'Tables -&gt; KPIs -&gt; embeddings. Progress appears in the list below.</div>';
+  const stop=elapsed($('#uel'),'Uploading & processing -');
+  FAST=true; startTick();
+  try{
+    const r=await api('/files/upload',{method:'POST',body:fd});
+    toast('Uploaded '+(r.file?.original_filename||f.name)+
+          ' to '+nameOfOrg(targetOrg),'ok');
+    if(targetOrg!==ORG){ ORG=targetOrg; localStorage.setItem('kpi_org',ORG); }
+    $('#uf').value=''; $('#ud').value=''; wireDrop();
+  }catch(e){ toast(e.message,'err'); }
+  finally{
+    stop(); $('#uprog').innerHTML=''; $('#ub').disabled=false;
+    FAST=true; startTick(); await refreshNow(false);
+  }
+}
+async function onFileAct(e){
+  const b=e.target.closest('button'); if(!b) return;
+  const d=$('#detail');
+  if(b.dataset.t){
+    d.innerHTML='<div class="card"><h3><span class="spin"></span> Tables - file #'+
+      b.dataset.t+'</h3><div class="bar"><i></i></div></div>';
+    try{
+      const t=await api('/files/'+b.dataset.t+'/tables');
+      d.innerHTML='<div class="card"><h3>Tables - file #'+b.dataset.t+
+        ' <span class="chip">'+t.length+'</span></h3>'+renderTables(t)+'</div>';
+    }catch(err){ d.innerHTML='<div class="card"><div class="empty">'+
+      esc(err.message)+'</div></div>'; }
+    d.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+  if(b.dataset.x){
+    b.disabled=true; const o=b.textContent;
+    const stop=elapsed(b,'');
+    toast('Extracting KPIs - the local model can take 30-90s');
+    try{
+      const r=await api('/files/'+b.dataset.x+'/extract-kpis',{method:'POST'});
+      toast('Done: '+r.tables_extracted+' tables, '+r.kpis_extracted+' KPIs','ok');
+    }catch(err){ toast(err.message,'err'); }
+    finally{ stop(); b.disabled=false; b.textContent=o; await refreshNow(false); }
+  }
+  if(b.dataset.k){
+    d.innerHTML='<div class="card"><h3><span class="spin"></span> Extracted KPIs - file #'+
+      b.dataset.k+'</h3><div class="bar"><i></i></div></div>';
+    try{
+      const k=await api('/files/'+b.dataset.k+'/extracted-kpis');
+      d.innerHTML='<div class="card"><h3>Extracted KPIs - file #'+b.dataset.k+
+        ' <span class="chip">'+k.length+'</span></h3>'+
+        (k.length?'<div class="tw"><table><thead><tr><th>Name</th><th>Value</th>'+
+          '<th>Unit</th><th>Confidence</th><th>Method</th></tr></thead><tbody>'+
+          k.map(x=>'<tr><td>'+esc(x.kpi_name)+'</td><td>'+(x.kpi_value??'-')+
+          '</td><td>'+esc(x.kpi_unit||'-')+'</td><td>'+(x.confidence_score??'-')+
+          '</td><td><span class="chip">'+esc(x.extraction_method||'-')+
+          '</span></td></tr>').join('')+'</tbody></table></div>':
+        '<div class="es"><div class="big">Nothing extracted</div>'+
+        'The model found no KPIs in this document, or it returned an empty '+
+        'response. Try <b>Extract KPIs</b> again.</div>')+'</div>';
+    }catch(err){ d.innerHTML='<div class="card"><div class="empty">'+
+      esc(err.message)+'</div></div>'; }
+  }
+  if(b.dataset.pr){
+    b.disabled=true; const o=b.textContent;
+    b.innerHTML='<span class="spin"></span>';
+    try{
+      const r=await api('/files/'+b.dataset.pr+'/promote-kpis',{method:'POST'});
+      toast(r.message, r.promoted?'ok':undefined);
+    }catch(err){ toast(err.message,'err'); }
+    finally{ b.disabled=false; b.textContent=o; await refreshNow(false); }
+  }
+  if(b.dataset.del){
+    if(!confirm('Delete file #'+b.dataset.del+'? This cannot be undone.')) return;
+    try{ await api('/files/'+b.dataset.del,{method:'DELETE'});
+      SEEN.delete(+b.dataset.del); toast('Deleted','ok'); d.innerHTML='';
+    }catch(err){ toast(err.message,'err'); }
+    await refreshNow(false);
+  }
+}
+function renderTables(list){
+  if(!list||!list.length) return '<div class="es"><div class="big">No tables found</div>'+
+    'The extractor found no tabular structure. Scanned PDFs need OCR, and the '+
+    'vision path is off by default.</div>';
+  return list.slice(0,20).map(t=>{
+    const rows=t.rows||[]; const head=rows[0]||[], body=rows.slice(1,26);
+    return '<div style="margin-bottom:18px"><div style="color:var(--muted);'+
+      'font-size:12px;margin-bottom:7px">page '+t.page+' | table #'+t.table_index+
+      ' | '+t.n_rows+'x'+t.n_cols+
+      (t.sheet_name?' | sheet '+esc(t.sheet_name):'')+
+      (t.source?' | via '+esc(t.source):'')+'</div>'+
+      '<div class="tw"><table><thead><tr>'+head.map(h=>'<th>'+esc(h)+'</th>').join('')+
+      '</tr></thead><tbody>'+body.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+
+      '</tr>').join('')+'</tbody></table></div>'+
+      (rows.length>26?'<div style="color:var(--muted);font-size:12px;margin-top:6px">'+
+        '... '+(rows.length-26)+' more rows</div>':'')+'</div>';
+  }).join('')+(list.length>20?'<div style="color:var(--muted);font-size:12px">'+
+    '... '+(list.length-20)+' more tables</div>':'');
+}
+
+/* ---------- ask (RAG) ---------- */
+function bubbleUser(text, ts){
+  return '<div class="msg me"><div class="avatar">You</div><div>'+
+    '<div class="bubble">'+esc(text)+'</div>'+
+    '<div class="meta">'+fmt(ts)+'</div></div></div>';
+}
+function bubbleBot(entry){
+  const n=(entry.sources||[]).length;
+  return '<div class="msg bot" data-ts="'+entry.ts+'"><div class="avatar">AI</div>'+
+    '<div><div class="bubble">'+esc(entry.answer)+'</div>'+
+    '<div class="meta">'+fmt(entry.ts)+
+      (entry.scope?' | '+esc(entry.scope):'')+
+      (n?' | '+n+' source'+(n>1?'s':'')+' - click to view':'')+
+    '</div></div></div>';
+}
+function bubbleTyping(){
+  return '<div class="msg bot" id="typing"><div class="avatar">AI</div>'+
+    '<div class="bubble typing"><span></span><span></span><span></span>'+
+    ' <span id="tel" style="font-size:12px;color:var(--muted)"></span></div></div>';
+}
+
+/* right-hand pane: the sources behind whichever answer is selected */
+let SEL_TS=null;
+function paintSources(){
+  const pane=$('#srclist'), qline=$('#srcq'); if(!pane) return;
+  const item=askHistory().find(x=>x.ts===SEL_TS) || askHistory()[0];
+  if(!item){
+    if(qline) qline.textContent='';
+    pane.innerHTML='<div class="es" style="padding:22px 8px">'+
+      'Sources appear here once you ask something.</div>';
+    $('#srccount').textContent='';
+    return;
+  }
+  if(qline) qline.textContent='for: '+item.q;
+  const srcs=item.sources||[];
+  $('#srccount').textContent=srcs.length||'';
+  pane.innerHTML = srcs.length ? srcs.map((x,i)=>
+    '<div class="srcitem"><div class="top">'+
+      '<span class="chip">'+(i+1)+'</span><b>'+esc(x.filename)+'</b>'+
+      (x.page?'<span>Page '+x.page+'</span>':'')+
+      (x.score!=null?'<span>similarity '+x.score.toFixed(3)+'</span>':'')+
+    '</div><pre>'+esc(x.text)+'</pre></div>').join('')
+    : '<div class="es" style="padding:22px 8px">No sources for this answer.</div>';
+  document.querySelectorAll('.msg.bot').forEach(m=>
+    m.classList.toggle('sel', +m.dataset.ts===item.ts));
+}
+function paintThread(){
+  const el=$('#thread'); if(!el) return;
+  const h=askHistory().slice().reverse();
+  el.innerHTML = h.length
+    ? h.map(x=>bubbleUser(x.q,x.ts)+bubbleBot(x)).join('')
+    : '<div class="es"><div class="big">Ask your documents</div>'+
+      'Answers come only from what you uploaded, and every figure is cited. '+
+      'Try <b>What was total net sales in 2025?</b></div>';
+  el.scrollTop = el.scrollHeight;
+  if(SEL_TS===null && h.length) SEL_TS=h[h.length-1].ts;
+  paintSources();
+}
+
+/* ---------- ask (chat) ---------- */
+async function vAsk(){
+  $('#view').innerHTML=head('Ask',
+    'Chat with your documents. Sources for the selected answer are on the right.');
+  wireHead();
+  $('#body').innerHTML=
+    '<div class="row" style="margin-bottom:10px;align-items:end">'+
+      '<div style="flex:0 0 220px"><label class="f">Company</label>'+
+        '<select id="orgsel">'+ORGS.map(o=>'<option value="'+o.id+'"'+
+        (o.id===ORG?' selected':'')+'>'+esc(o.name)+'</option>').join('')+
+        '</select></div>'+
+      '<div style="flex:1;min-width:220px"><label class="f">Document</label>'+
+        '<select id="docsel"><option value="">Loading...</option></select></div>'+
+      '<div style="flex:0 0 100px"><label class="f">Chunks</label>'+
+        '<input id="tk" type="number" value="5" min="1" max="20"></div>'+
+      '<div style="flex:0;align-self:center"><button id="chatClear" '+
+        'style="padding:7px 11px;font-size:12px">Clear chat</button></div>'+
+    '</div>'+
+    '<div class="chatwrap">'+
+      '<div class="chat"><div class="thread" id="thread"></div>'+
+        '<div class="composer">'+
+          '<textarea id="q" rows="1" placeholder="Ask about your documents...">'+
+          '</textarea>'+
+          '<button class="p" id="ab" style="height:44px">Send</button>'+
+        '</div>'+
+        '<div style="color:var(--muted);font-size:11px;margin-top:6px">'+
+          '<kbd>Enter</kbd> to send, <kbd>Shift</kbd>+<kbd>Enter</kbd> newline'+
+        '</div>'+
+      '</div>'+
+      '<div class="srcpane"><h4>Sources '+
+        '<span class="chip" id="srccount"></span></h4>'+
+        '<div class="srcq" id="srcq"></div>'+
+        '<div class="srclist" id="srclist"></div></div>'+
+    '</div>';
+  // Changing company re-renders the view, which reloads that company's docs.
+  const os=$('#orgsel');
+  if(os) os.onchange=()=>{ ORG=+os.value; localStorage.setItem('kpi_org',ORG);
+                           render(); };
+  paintThread();
+
+  CURRENT=async()=>{
+    const files=await api('/files/?limit=500&organization_id='+ORG);
+    const ready=files.filter(f=>f.status==='completed');
+    const sel=$('#docsel'); if(!sel) return;
+    const keep=sel.value;                       // don't clobber the user's pick
+    sel.innerHTML='<option value="">All documents ('+ready.length+')</option>'+
+      ready.map(f=>'<option value="'+f.id+'">'+
+        esc(f.original_filename||f.filename)+'</option>').join('');
+    if(keep && [...sel.options].some(o=>o.value===keep)) sel.value=keep;
+  };
+  await refreshNow(false); startTick();
+
+  $('#chatClear').onclick=()=>{
+    if(!confirm('Clear the whole conversation?')) return;
+    askClear(); SEL_TS=null; paintThread();
+  };
+  $('#thread').onclick=e=>{
+    const m=e.target.closest('.msg.bot'); if(!m||!m.dataset.ts) return;
+    SEL_TS=+m.dataset.ts; paintSources();
+  };
+
+  const ta=$('#q');
+  ta.addEventListener('input',()=>{
+    ta.style.height='auto'; ta.style.height=Math.min(ta.scrollHeight,180)+'px';
+  });
+
+  const go=async()=>{
+    const q=ta.value.trim(); if(!q) return;
+    const thread=$('#thread');
+    if(!askHistory().length) thread.innerHTML='';
+    ta.value=''; ta.style.height='auto';
+    $('#ab').disabled=true;
+    thread.insertAdjacentHTML('beforeend', bubbleUser(q, Date.now()));
+    thread.insertAdjacentHTML('beforeend', bubbleTyping());
+    thread.scrollTop=thread.scrollHeight;
+    const stop=elapsed($('#tel'),'');
+    try{
+      const r=await api('/files/ask',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({question:q,organization_id:ORG,
+          top_k:+$('#tk').value,
+          file_ids: $('#docsel').value ? [+$('#docsel').value] : null})});
+      const entry={ ts:Date.now(), q:q, answer:r.answer,
+        scope: $('#docsel').selectedOptions[0]
+                 ? $('#docsel').selectedOptions[0].textContent : '',
+        sources:(r.sources||[]).map(x=>({
+          filename:x.filename,
+          page:(x.chunk_metadata||{}).page_number||null,
+          score:x.similarity_score,
+          text:(x.content_chunk||'').slice(0,1600),
+        })) };
+      askSave(entry);
+      stop(); const t=$('#typing'); if(t) t.remove();
+      thread.insertAdjacentHTML('beforeend', bubbleBot(entry));
+      SEL_TS=entry.ts; paintSources();
+    }catch(e){
+      stop(); const t=$('#typing'); if(t) t.remove();
+      thread.insertAdjacentHTML('beforeend',
+        '<div class="msg bot"><div class="avatar">AI</div><div class="bubble" '+
+        'style="border-color:var(--err);color:var(--err)">'+esc(e.message)+
+        '</div></div>');
+    }
+    finally{
+      $('#ab').disabled=false; thread.scrollTop=thread.scrollHeight; ta.focus();
+    }
+  };
+  $('#ab').onclick=go;
+  ta.addEventListener('keydown',e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); go(); }
+  });
+  ta.focus();
+}
+
+/* ---------- kpis ---------- */
+async function vKpis(){
+  $('#view').innerHTML=head('KPIs','Structured metrics for this organization.');
+  wireHead();
+  $('#body').innerHTML=orgPicker()+'<div class="card"><div id="kl">'+
+    '<span class="spin"></span></div></div>';
+  wireOrg();
+  CURRENT=async()=>{
+    const k=await api('/kpis/?organization_id='+ORG);
+    $('#kl').innerHTML=k.length?
+      '<div class="row" style="align-items:center;margin-bottom:10px">'+
+        '<div style="flex:0"><button class="d" id="kdel" disabled>'+
+          'Delete selected</button></div>'+
+        '<div style="flex:0;color:var(--muted);font-size:12px" id="ksel">'+
+          'none selected</div></div>'+
+      '<div class="tw"><table><thead><tr>'+
+      '<th style="width:28px"><input type="checkbox" id="kall" '+
+        'title="Select all"></th>'+
+      '<th>ID</th><th>Name</th>'+
+      '<th>Category</th><th>Current</th><th>Target</th><th>Unit</th><th>Created</th>'+
+      '<th></th></tr></thead><tbody>'+k.map(x=>'<tr>'+
+      '<td><input type="checkbox" class="kchk" value="'+x.id+'"></td>'+
+      '<td>'+x.id+'</td><td>'+esc(x.name)+
+      '</td><td><span class="chip">'+esc(x.category)+'</span></td><td>'+
+      (x.current_value??'-')+'</td><td>'+(x.target_value??'-')+'</td><td>'+
+      esc(x.unit||'-')+'</td><td>'+fmt(x.created_at)+'</td>'+
+      '<td class="acts"><button class="d" data-dk="'+x.id+'">Delete</button></td>'+
+      '</tr>').join('')+'</tbody></table></div>':
+      '<div class="es"><div class="big">No curated KPIs yet</div>'+
+      'Extraction writes to a per-file staging area. To bring those metrics '+
+      'here, open <b>Files</b> and hit <code>-&gt; Curated</code> on a processed '+
+      'file.</div>';
+    const boxes=()=>Array.from(document.querySelectorAll('.kchk'));
+    const picked=()=>boxes().filter(c=>c.checked).map(c=>+c.value);
+    function syncSel(){
+      const n=picked().length, all=boxes().length;
+      const del=$('#kdel'), head=$('#kall');
+      if(del){ del.disabled=!n;
+        del.textContent=n?('Delete selected ('+n+')'):'Delete selected'; }
+      if(head){ head.checked=n>0&&n===all;
+        /* Partial selection reads as neither on nor off. */
+        head.indeterminate=n>0&&n<all; }
+      const lbl=$('#ksel'); if(lbl) lbl.textContent=n?(n+' of '+all+' selected'):'none selected';
+    }
+    const kall=$('#kall');
+    if(kall) kall.onchange=()=>{ boxes().forEach(c=>{c.checked=kall.checked;}); syncSel(); };
+    $('#kl').onchange=e=>{ if(e.target.classList.contains('kchk')) syncSel(); };
+    const kdel=$('#kdel');
+    if(kdel) kdel.onclick=async()=>{
+      const ids=picked(); if(!ids.length) return;
+      if(!confirm('Delete '+ids.length+' KPI'+(ids.length>1?'s':'')+'?')) return;
+      kdel.disabled=true;
+      /* Sequential, not parallel: a partial failure should stop rather than
+         leave an unpredictable subset deleted, and the count is small. */
+      let ok=0, failed=null;
+      for(const id of ids){
+        try{ await api('/kpis/'+id,{method:'DELETE'}); ok++; }
+        catch(err){ failed=err.message; break; }
+      }
+      toast(failed?('Deleted '+ok+' of '+ids.length+': '+failed)
+                  :('Deleted '+ok), failed?'err':'ok');
+      await refreshNow(false);
+    };
+    $('#kl').onclick=async e=>{
+      const b=e.target.closest('button[data-dk]'); if(!b) return;
+      if(!confirm('Delete KPI #'+b.dataset.dk+'?')) return;
+      try{ await api('/kpis/'+b.dataset.dk,{method:'DELETE'}); toast('Deleted','ok');
+      }catch(err){ toast(err.message,'err'); }
+      await refreshNow(false);
+    };
+    syncSel();
+  };
+  await refreshNow(false); startTick();
+}
+
+/* ---------- users ---------- */
+async function vUsers(){
+  $('#view').innerHTML=head('Users','Accounts on this instance.');
+  wireHead();
+  $('#body').innerHTML='<div class="card"><div id="ul">'+
+    '<span class="spin"></span></div></div>';
+  CURRENT=async()=>{
+    const u=await api('/users/?limit=200');
+    $('#ul').innerHTML=u.length?'<div class="tw"><table><thead><tr><th>ID</th>'+
+      '<th>Username</th><th>Email</th><th>Name</th><th>Role</th><th>Active</th>'+
+      '<th>Created</th></tr></thead><tbody>'+u.map(x=>'<tr><td>'+x.id+'</td><td>'+
+      esc(x.username)+'</td><td>'+esc(x.email)+'</td><td>'+esc(x.full_name||'-')+
+      '</td><td><span class="chip">'+esc(x.role)+'</span></td><td>'+
+      (x.is_active?'<span class="chip ok">yes</span>':'<span class="chip err">no</span>')+
+      '</td><td>'+fmt(x.created_at)+'</td></tr>').join('')+'</tbody></table></div>':
+      '<div class="empty">No users.</div>';
+  };
+  await refreshNow(false); startTick();
+}
+
+/* ---------- orgs ---------- */
+async function vOrgs(){
+  $('#view').innerHTML=head('Organizations','Tenants that own files and KPIs.');
+  wireHead();
+  $('#body').innerHTML='<div class="card"><h3>New organization</h3><div class="row">'+
+    '<div><label class="f">Name</label><input id="on" placeholder="Acme Inc"></div>'+
+    '<div><label class="f">Description</label><input id="od" placeholder="optional"></div>'+
+    '<div style="flex:0"><button class="p" id="ob">Create</button></div></div></div>'+
+    '<div class="card"><div id="ol"><span class="spin"></span></div></div>';
+  $('#ob').onclick=async()=>{
+    const name=$('#on').value.trim();
+    if(!name) return toast('Name is required','err');
+    $('#ob').disabled=true;
+    try{
+      await api('/organizations/',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name,description:$('#od').value||null})});
+      toast('Created','ok'); $('#on').value=''; $('#od').value='';
+      ORGS=await api('/organizations/');
+    }catch(e){ toast(e.message,'err'); }
+    finally{ $('#ob').disabled=false; await refreshNow(false); }
+  };
+  CURRENT=async()=>{
+    const o=await api('/organizations/'); ORGS=o;
+    $('#ol').innerHTML=o.length?'<div class="tw"><table><thead><tr><th>ID</th><th>Name</th>'+
+      '<th>Description</th><th>Created</th><th></th></tr></thead><tbody>'+o.map(x=>'<tr><td>'+
+      x.id+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.description||'-')+'</td><td>'+
+      fmt(x.created_at)+'</td><td class="acts">'+
+      '<button class="d" data-do="'+x.id+'">Delete</button></td></tr>').join('')+
+      '</tbody></table></div>':'<div class="empty">No organizations.</div>';
+    $('#ol').onclick=async e=>{
+      const b=e.target.closest('button[data-do]'); if(!b) return;
+      const id=b.dataset.do;
+      if(!confirm('Delete organization #'+id+'?')) return;
+      b.disabled=true;
+      const finish=async()=>{
+        toast('Organization deleted','ok');
+        ORGS=await api('/organizations/');
+        /* The picker may have been pointing at the row just removed. */
+        if(!ORGS.find(o2=>o2.id===ORG)) ORG=ORGS.length?ORGS[0].id:0;
+      };
+      try{
+        await api('/organizations/'+id,{method:'DELETE'});
+        await finish();
+      }catch(err){
+        /* The refusal names exactly what is in the way, so put that in front
+           of the user and let them decide, rather than making them go and
+           count it themselves. */
+        const blocked=/still has/i.test(err.message||'');
+        if(blocked && confirm(err.message+'\n\nDelete organization #'+id+
+             ' AND all of that content? This cannot be undone.')){
+          try{
+            await api('/organizations/'+id+'?cascade=true',{method:'DELETE'});
+            await finish();
+          }catch(e2){ toast(e2.message,'err'); b.disabled=false; }
+        }else{ toast(err.message,'err'); b.disabled=false; }
+      }
+      await refreshNow(false);
+    };
+  };
+  await refreshNow(false); startTick();
+}
+
+/* ---------- init ---------- */
+$('#lb').onclick=login;
+$('#lp').addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+$('#out').onclick=logout;
+if(TOK) boot(); else { $('#login').classList.remove('hide'); }
+</script>
+</body>
+</html>

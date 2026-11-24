@@ -18,13 +18,13 @@ logger = logging.getLogger(__name__)
 
 try:  # optional heavy deps — engine degrades gracefully if missing
     import fitz  # PyMuPDF
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     fitz = None
 
 try:
     import pytesseract
     from PIL import Image
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     pytesseract = None
     Image = None
 
@@ -34,6 +34,7 @@ class OCRUnavailable(RuntimeError):
 
 
 def is_available() -> bool:
+    """True if the OCR dependencies (PyMuPDF, pytesseract, Pillow) are importable."""
     return fitz is not None and pytesseract is not None and Image is not None
 
 
@@ -148,6 +149,10 @@ def _reconstruct(words, page_w: float, page_h: float) -> Optional[List[List[Opti
 
 def extract_pdf(pdf_path: str, dpi: int = 200, lang: str = "eng",
                 page_filter: Set[int] | None = None) -> List[ExtractedTable]:
+    """Render each PDF page, OCR it, and reconstruct one table per page.
+
+    Raises OCRUnavailable if the OCR dependencies are not installed.
+    """
     if not is_available():
         raise OCRUnavailable(
             "OCR requires pymupdf, pytesseract, Pillow and the Tesseract binary."
@@ -174,6 +179,10 @@ def extract_pdf(pdf_path: str, dpi: int = 200, lang: str = "eng",
 
 
 def extract_image(image_path: str, lang: str = "eng") -> List[ExtractedTable]:
+    """OCR a single image file and reconstruct one table from it.
+
+    Raises OCRUnavailable if the OCR dependencies are not installed.
+    """
     if not is_available():
         raise OCRUnavailable(
             "OCR requires pytesseract, Pillow and the Tesseract binary."

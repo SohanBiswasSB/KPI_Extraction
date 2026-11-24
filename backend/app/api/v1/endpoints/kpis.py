@@ -1,14 +1,18 @@
+"""KPI management endpoints for CRUD, history, and analytics operations."""
+import logging
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List, Optional
-from datetime import datetime
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user, require_minimum_role
 from app.models.user import User, UserRole
 from app.models.kpi import KPI, KPIHistory, KPICreate, KPIUpdate, KPIResponse, KPIHistoryCreate
 from app.services.ai_service import AIService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 ai_service = AIService()
@@ -24,16 +28,16 @@ async def get_kpis(
 ):
     """Get KPIs for an organization."""
     query = select(KPI).where(KPI.organization_id == organization_id)
-    
+
     if dashboard_id:
         query = query.where(KPI.dashboard_id == dashboard_id)
-    
+
     if category:
         query = query.where(KPI.category == category)
-    
+
     result = await db.execute(query)
     kpis = result.scalars().all()
-    
+
     return kpis
 
 
@@ -46,10 +50,10 @@ async def get_kpi(
     """Get a specific KPI by ID."""
     result = await db.execute(select(KPI).where(KPI.id == kpi_id))
     kpi = result.scalar_one_or_none()
-    
+
     if not kpi:
         raise HTTPException(status_code=404, detail="KPI not found")
-    
+
     return kpi
 
 
@@ -67,26 +71,26 @@ async def create_kpi(
             **kpi_dict,
             created_by=current_user.id
         )
-        
+
         db.add(kpi)
         await db.commit()
         await db.refresh(kpi)
-        
+
         # Generate embeddings for the KPI for better searchability
         try:
             await ai_service.create_kpi_embedding(kpi, db)
         except Exception as embedding_error:
             # Log the error but don't fail the KPI creation
-            print(f"Warning: Failed to create KPI embedding: {embedding_error}")
-        
+            logger.warning("Failed to create KPI embedding: %s", embedding_error)
+
         return kpi
-        
+
     except Exception as e:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to create KPI: {str(e)}"
-        )
+        ) from e
 
 
 @router.put("/{kpi_id}", response_model=KPIResponse)
@@ -99,17 +103,17 @@ async def update_kpi(
     """Update a KPI."""
     result = await db.execute(select(KPI).where(KPI.id == kpi_id))
     kpi = result.scalar_one_or_none()
-    
+
     if not kpi:
         raise HTTPException(status_code=404, detail="KPI not found")
-    
+
     # Update fields
     for field, value in kpi_data.dict(exclude_unset=True).items():
         setattr(kpi, field, value)
-    
+
     await db.commit()
     await db.refresh(kpi)
-    
+
     return kpi
 
 
@@ -122,13 +126,13 @@ async def delete_kpi(
     """Delete a KPI."""
     result = await db.execute(select(KPI).where(KPI.id == kpi_id))
     kpi = result.scalar_one_or_none()
-    
+
     if not kpi:
         raise HTTPException(status_code=404, detail="KPI not found")
-    
+
     await db.delete(kpi)
     await db.commit()
-    
+
     return {"message": "KPI deleted successfully"}
 
 
@@ -147,7 +151,7 @@ async def get_kpi_history(
         .limit(limit)
     )
     history = result.scalars().all()
-    
+
     return history
 
 
@@ -162,25 +166,25 @@ async def add_kpi_value(
     # Check if KPI exists
     result = await db.execute(select(KPI).where(KPI.id == kpi_id))
     kpi = result.scalar_one_or_none()
-    
+
     if not kpi:
         raise HTTPException(status_code=404, detail="KPI not found")
-    
+
     # Create history record
     history = KPIHistory(
         kpi_id=kpi_id,
         value=history_data.value,
         notes=history_data.notes
     )
-    
+
     db.add(history)
-    
+
     # Update current value
     kpi.current_value = history_data.value
-    
+
     await db.commit()
     await db.refresh(history)
-    
+
     return history
 
 
@@ -192,8 +196,8 @@ async def get_kpi_analytics(
 ):
     """Get AI-powered analytics for a KPI."""
     analytics = await ai_service.analyze_kpi_trends(kpi_id, db)
-    
+
     if "error" in analytics:
         raise HTTPException(status_code=404, detail=analytics["error"])
-    
-    return analytics 
+
+    return analytics
